@@ -2,14 +2,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
 class Settings(BaseSettings):
-    POSTGRES_USER: str = "postgres"
-    POSTGRES_PASSWORD: str = "postgres"
-    POSTGRES_DB: str = "telemetry"
-    POSTGRES_HOST: str = "db"
-    POSTGRES_PORT: int = 5432
-    MQTT_HOST: str = "mosquitto"
-    MQTT_PORT: int = 1883
-    log_level: str = "INFO"
+    postgres_user: str = Field("postgres", alias="POSTGRES_USER")
+    postgres_password: str = Field("postgres", alias="POSTGRES_PASSWORD")
+    postgres_db: str = Field("telemetry", alias="POSTGRES_DB")
+    postgres_host: str = Field("db", alias="POSTGRES_HOST")
+    postgres_port: int = Field(5432, alias="POSTGRES_PORT")
+    mqtt_host: str = Field("mosquitto", alias="MQTT_HOST")
+    mqtt_port: int = Field(1883, alias="MQTT_PORT")
+    log_level: str = Field("INFO", alias="LOG_LEVEL")
 
     model_config = SettingsConfigDict(env_file=".env")
 

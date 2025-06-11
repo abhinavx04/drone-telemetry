@@ -32,7 +32,7 @@ services:
       POSTGRES_DB: drone_telemetry
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: example
-      log_level: INFO
+      LOG_LEVEL: INFO
     ports:
       - "8000:8000"
     restart: unless-stopped
