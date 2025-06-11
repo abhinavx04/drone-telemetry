@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto:/mosquitto/config
+    restart: unless-stopped
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg14
+    environment:
+      POSTGRES_PASSWORD: example
+      POSTGRES_USER: postgres
+      POSTGRES_DB: drone_telemetry
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    depends_on:
+      - mosquitto
+      - timescaledb
+    environment:
+      - MQTT_HOST=mosquitto
+      - MQTT_PORT=1883
+      - DB_HOST=timescaledb
+      - DB_PORT=5432
+      - DB_NAME=drone_telemetry
+      - DB_USER=postgres
+      - DB_PASSWORD=example
+      - LOG_LEVEL=INFO
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  mavsdk-drone1:
+    build: ./mavsdk
+    command: python telemetry_mqtt.py --port 14540 --drone-id DRONE1 --mqtt-host mosquitto --mqtt-port 1883
+    depends_on:
+      - mosquitto
+    ports:
+      - "14540:14540/udp"
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
