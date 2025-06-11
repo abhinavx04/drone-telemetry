@@ -25,14 +25,14 @@ services:
       - mosquitto
       - timescaledb
     environment:
-      - MQTT_HOST=mosquitto
-      - MQTT_PORT=1883
-      - DB_HOST=timescaledb
-      - DB_PORT=5432
-      - DB_NAME=drone_telemetry
-      - DB_USER=postgres
-      - DB_PASSWORD=example
-      - LOG_LEVEL=INFO
+      MQTT_HOST: mosquitto
+      MQTT_PORT: 1883
+      POSTGRES_HOST: timescaledb
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: drone_telemetry
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: example
+      LOG_LEVEL: INFO
     ports:
       - "8000:8000"
     restart: unless-stopped
