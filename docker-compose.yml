@@ -6,7 +6,7 @@ services:
     ports:
       - "1883:1883"
     volumes:
-      - ./mosquitto:/mosquitto/config
+      - ./mosquitto/config:/mosquitto/config
     restart: unless-stopped
 
   timescaledb:
