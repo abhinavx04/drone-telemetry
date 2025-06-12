@@ -4,7 +4,7 @@ from pydantic import Field
 class Settings(BaseSettings):
     mqtt_host: str = Field("mosquitto", alias="MQTT_HOST")
     mqtt_port: int = Field(1883, alias="MQTT_PORT")
-    mqtt_topic: str = Field("drone/telemetry", alias="MQTT_TOPIC")
+    mqtt_topic: str = Field("drone/+/telemetry", alias="MQTT_TOPIC")
     postgres_user: str = Field("postgres", alias="POSTGRES_USER")
     postgres_password: str = Field("postgres", alias="POSTGRES_PASSWORD")
     postgres_db: str = Field("telemetry", alias="POSTGRES_DB")
