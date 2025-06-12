@@ -1,6 +1,7 @@
 import asyncio
 import argparse
 import json
+from datetime import datetime, timezone
 from mavsdk import System
 import paho.mqtt.client as mqtt
 
@@ -23,7 +24,8 @@ async def run(args):
             "drone_id": args.drone_id,
             "latitude": telemetry.latitude_deg,
             "longitude": telemetry.longitude_deg,
-            "absolute_altitude_m": telemetry.absolute_altitude_m
+            "absolute_altitude_m": telemetry.absolute_altitude_m,
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         }
         topic = f"drone/{args.drone_id}/telemetry"
         client.publish(topic, json.dumps(data))
