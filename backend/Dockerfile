@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 WORKDIR /app
 
-# Copy all source files including wait-for-it.sh
+# Copy all source files
 COPY . .
 
 RUN pip install --upgrade pip && pip install -r requirements.txt
