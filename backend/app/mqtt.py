@@ -12,6 +12,7 @@ logger = logging.getLogger("mqtt")
 async def handle_mqtt_message(payload: bytes):
     try:
         data = json.loads(payload)
+        print("Received MQTT:", data)
         telemetry = TelemetryIn(**data)
         async with AsyncSessionLocal() as db:
             await create_telemetry(db, telemetry)
