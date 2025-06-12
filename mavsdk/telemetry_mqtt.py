@@ -23,8 +23,7 @@ async def run(args):
             "drone_id": args.drone_id,
             "latitude": telemetry.latitude_deg,
             "longitude": telemetry.longitude_deg,
-            "absolute_altitude_m": telemetry.absolute_altitude_m,
-            "timestamp": telemetry.timestamp_us
+            "absolute_altitude_m": telemetry.absolute_altitude_m
         }
         topic = f"drone/{args.drone_id}/telemetry"
         client.publish(topic, json.dumps(data))
