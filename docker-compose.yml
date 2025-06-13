@@ -27,7 +27,7 @@ services:
     environment:
       MQTT_HOST: mosquitto
       MQTT_PORT: 1883
-      MQTT_TOPIC: drone/+/telemetry
+      MQTT_TOPIC: drone/DRONE1/telemetry
       POSTGRES_HOST: timescaledb
       POSTGRES_PORT: 5432
       POSTGRES_DB: drone_telemetry
