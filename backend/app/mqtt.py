@@ -12,11 +12,25 @@ logger = logging.getLogger("mqtt")
 async def handle_mqtt_message(payload: bytes):
     try:
         data = json.loads(payload)
-        print("Received MQTT:", data)
+        logger.debug(f"Received MQTT payload: {data}")
+        
+        # Log timestamp type before conversion
+        if 'timestamp' in data:
+            logger.debug(f"Timestamp type before conversion: {type(data['timestamp'])}")
+        
         telemetry = TelemetryIn(**data)
+        
+        # Log timestamp type after conversion
+        logger.debug(f"Timestamp type after conversion: {type(telemetry.timestamp)}")
+        logger.debug(f"Timestamp value: {telemetry.timestamp}")
+        
         async with AsyncSessionLocal() as db:
             await create_telemetry(db, telemetry)
-        logger.info(f"Saved telemetry: {data}")
+        logger.info(f"Successfully saved telemetry for drone {telemetry.drone_id}")
+    except ValueError as e:
+        logger.error(f"Validation error in MQTT message: {e} | Payload: {payload}")
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in MQTT message: {e} | Payload: {payload}")
     except Exception as e:
         logger.error(f"Failed to handle MQTT message: {e} | Payload: {payload}")
 
