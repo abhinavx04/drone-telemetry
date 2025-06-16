@@ -88,7 +88,7 @@ async def monitor_flight_mode(drone, drone_state):
             drone_state.flight_mode = "manual"
 
 async def monitor_armed(drone, drone_state):
-    async for armed in drone.telemetry.armed():
+    async for armed in drone.telemetry.armed():gi
         if armed and not drone_state.is_flying:
             drone_state.is_flying = True
         elif not armed and drone_state.is_flying:
