@@ -101,7 +101,7 @@ async def monitor_gps(drone, drone_state):
         drone_state.gps_fix = gps_info.fix_type >= 3  # 3 or higher indicates 3D fix
 
 async def monitor_system_status(drone, drone_state):
-    async for status in drone.telemetry.status():
+    async for status in drone.telemetry.rc_status():
         drone_state.system_status = status.system_status
 
 async def monitor_position(drone, drone_state, client, drone_id):
