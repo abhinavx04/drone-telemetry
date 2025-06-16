@@ -98,7 +98,8 @@ async def monitor_armed(drone, drone_state):
 
 async def monitor_gps(drone, drone_state):
     async for gps_info in drone.telemetry.gps_info():
-        drone_state.gps_fix = gps_info.fix_type >= 3  # 3 or higher indicates 3D fix
+        # FIX: Use .value for enum comparison
+        drone_state.gps_fix = gps_info.fix_type.value >= 3  # 3 or higher indicates 3D fix
 
 async def monitor_system_status(drone, drone_state):
     async for status in drone.telemetry.rc_status():
@@ -150,4 +151,4 @@ if __name__ == "__main__":
     parser.add_argument("--mqtt-host", required=True)
     parser.add_argument("--mqtt-port", type=int, default=1883)
     args = parser.parse_args()
-    asyncio.run(run(args))
+    asyncio.run(run(args)) 
