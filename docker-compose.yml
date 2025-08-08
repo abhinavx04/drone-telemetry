@@ -40,7 +40,7 @@ services:
 
   mavsdk-drone1:
     build: ./mavsdk
-    command: python -u telemetry_mqtt.py --port 14540 --drone-id DRONE1 --mqtt-host mosquitto --mqtt-port 1883
+    command: --port 14540 --drone-id DRONE1 --mqtt-host mosquitto --mqtt-port 1883
     depends_on:
       - mosquitto
     ports:
