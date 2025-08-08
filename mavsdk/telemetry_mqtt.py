@@ -9,41 +9,13 @@ import logging
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# Emergency reason mapping (backend expects Title Case)
-EMERGENCY_REASON_LABELS = {
-    "low_battery": "Low Battery",
-    "gps_loss": "GPS Loss",
-    "system_failure": "System Failure",
-    "loss_of_control": "Loss of Control"
-}
-
 class DroneState:
     def __init__(self):
-        self.flight_count = 0
-        self.is_flying = False
-        self.trajectory = []
-        self.last_position = None
-        self.emergency_reasons = set()
         self.battery_percent = None     # No assumption of default
         self.flight_mode = None
         self.is_armed = None
         self.gps_fix = None
         self.system_status = None
-
-    def update_emergency_status(self):
-        self.emergency_reasons.clear()
-
-        # Defensive checks, add reasons using backend-conformant labels
-        if self.battery_percent is not None and self.battery_percent < 20:
-            self.emergency_reasons.add(EMERGENCY_REASON_LABELS["low_battery"])
-        if self.gps_fix is not None and not self.gps_fix:
-            self.emergency_reasons.add(EMERGENCY_REASON_LABELS["gps_loss"])
-        if self.system_status in ["ERROR", "CRITICAL"]:
-            self.emergency_reasons.add(EMERGENCY_REASON_LABELS["system_failure"])
-        if self.is_armed is not None and not self.is_armed:
-            self.emergency_reasons.add(EMERGENCY_REASON_LABELS["loss_of_control"])
-
-        return len(self.emergency_reasons) > 0, list(self.emergency_reasons)
 
 async def run(args):
     drone = System()
@@ -113,11 +85,6 @@ async def monitor_armed(drone, drone_state):
         if armed is None:
             logging.warning("Missing armed state data")
             continue
-        if armed and not drone_state.is_flying:
-            drone_state.is_flying = True
-        elif not armed and drone_state.is_flying:
-            drone_state.is_flying = False
-            drone_state.flight_count += 1
         drone_state.is_armed = armed
 
 async def monitor_gps(drone, drone_state):
@@ -146,22 +113,6 @@ async def monitor_position(drone, drone_state, client, drone_id):
             logging.warning("Incomplete position data; skipping publish")
             continue
 
-        # Trajectory logic, keep only last 1000
-        if (
-            drone_state.last_position is None or
-            abs(position.latitude_deg - drone_state.last_position.latitude_deg) > 0.0001 or
-            abs(position.longitude_deg - drone_state.last_position.longitude_deg) > 0.0001
-        ):
-            drone_state.trajectory.append({
-                "latitude": position.latitude_deg,
-                "longitude": position.longitude_deg,
-                "timestamp": int(datetime.now(timezone.utc).timestamp())
-            })
-            if len(drone_state.trajectory) > 1000:
-                drone_state.trajectory = drone_state.trajectory[-1000:]
-            drone_state.last_position = position
-
-        is_emergency, emergency_reasons = drone_state.update_emergency_status()
         now_iso = datetime.now(timezone.utc).isoformat()
 
         data = {
@@ -172,16 +123,11 @@ async def monitor_position(drone, drone_state, client, drone_id):
             "timestamp": now_iso,
             "battery_percentage": drone_state.battery_percent if drone_state.battery_percent is not None else -1,
             "flight_mode": drone_state.flight_mode if drone_state.flight_mode else "Unknown",
-            "is_online": True,
-            "flight_count": drone_state.flight_count,
-            "emergency_status": is_emergency,
-            "emergency_reasons": emergency_reasons,
-            "trajectory": drone_state.trajectory
+            "is_online": True
         }
 
-        # Log every N messages or if emergency occurs
-        if is_emergency or drone_state.flight_count % 10 == 0:
-            logging.info(f"Publishing telemetry: {data}")
+        # Log telemetry data periodically
+        logging.info(f"Publishing telemetry: {data}")
 
         topic = f"drone/{drone_id}/telemetry"
         try:

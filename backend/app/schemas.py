@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, validator
 from datetime import datetime
-from typing import Union, List, Optional
+from typing import Union, Optional
 import logging
 
 logger = logging.getLogger(__name__)
@@ -14,10 +14,6 @@ class TelemetryIn(BaseModel):
     battery_percentage: Optional[float] = None
     flight_mode: Optional[str] = None
     is_online: Optional[bool] = True
-    flight_count: Optional[int] = 0
-    emergency_status: Optional[bool] = False
-    emergency_reasons: Optional[List[str]] = None
-    trajectory: Optional[List[dict]] = None
 
     @validator('timestamp')
     def convert_timestamp(cls, v):
@@ -54,14 +50,5 @@ class TelemetryIn(BaseModel):
             raise ValueError('Flight mode must be one of: manual, atti, rth')
         return v
 
-    @validator('emergency_reasons')
-    def validate_emergency_reasons(cls, v):
-        if v is not None:
-            valid_reasons = {'low_battery', 'gps_loss', 'system_failure', 'loss_of_control', 'obstacle_detected'}
-            invalid_reasons = set(v) - valid_reasons
-            if invalid_reasons:
-                raise ValueError(f'Invalid emergency reasons: {invalid_reasons}')
-        return v
-
 class TelemetryOut(TelemetryIn):
-    id: int
+    pass
