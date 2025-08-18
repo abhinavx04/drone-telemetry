@@ -11,7 +11,7 @@ __pycache__/
 .idea/
 *.pem
 # Ignore frontend folder
-frontend/
+
 
 # Ignore node_modules in frontend
 frontend/node_modules/
