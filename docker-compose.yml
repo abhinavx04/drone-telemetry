@@ -27,7 +27,7 @@ services:
     environment:
       MQTT_HOST: mosquitto
       MQTT_PORT: 1883
-      MQTT_TOPIC: drone/DRONE1/telemetry
+      MQTT_TOPIC: drone/+/telemetry
       POSTGRES_HOST: timescaledb
       POSTGRES_PORT: 5432
       POSTGRES_DB: drone_telemetry
@@ -40,11 +40,24 @@ services:
 
   mavsdk-drone1:
     build: ./mavsdk
-    command: --port 14540 --drone-id DRONE1 --mqtt-host mosquitto --mqtt-port 1883
+    command: python3 telemetry_mqtt.py --port 14540 --drone-id DRONE1 --mqtt-host mosquitto
     depends_on:
       - mosquitto
-    ports:
-      - "14540:14540/udp"
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "netstat -uln | grep :14540 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  simulator:
+    build: ./mavsdk
+    command: python3 drone_simulator.py
+    depends_on:
+      mavsdk-drone1:
+        condition: service_healthy
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
