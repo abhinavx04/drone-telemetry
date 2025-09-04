@@ -2,10 +2,10 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
+# FIX: This line now correctly copies the specific requirements file
+COPY requirements.simulator.txt requirements.txt
 COPY drone_simulator.py .
 
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
-# This container's main purpose is to run the simulator script
 ENTRYPOINT ["python3", "drone_simulator.py"]
