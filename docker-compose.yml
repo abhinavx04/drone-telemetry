@@ -1,6 +1,7 @@
 version: '3.8'
 
 services:
+  # Mosquitto MQTT Broker: No changes needed here.
   mosquitto:
     image: eclipse-mosquitto:2
     ports:
@@ -9,7 +10,8 @@ services:
       - ./mosquitto/config:/mosquitto/config
     restart: unless-stopped
 
-  timescaledb:
+  # Renamed 'timescaledb' to 'db' for consistency
+  db:
     image: timescale/timescaledb:latest-pg14
     environment:
       POSTGRES_PASSWORD: example
@@ -18,17 +20,20 @@ services:
     ports:
       - "5432:5432"
     restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data # Added a volume to persist data
 
+  # Backend Service: Corrected dependency and environment variable
   backend:
     build: ./backend
     depends_on:
       - mosquitto
-      - timescaledb
+      - db # Corrected dependency to match the service name 'db'
     environment:
       MQTT_HOST: mosquitto
       MQTT_PORT: 1883
       MQTT_TOPIC: drone/+/telemetry
-      POSTGRES_HOST: timescaledb
+      POSTGRES_HOST: db # Corrected to match the service name 'db'
       POSTGRES_PORT: 5432
       POSTGRES_DB: drone_telemetry
       POSTGRES_USER: postgres
@@ -38,23 +43,30 @@ services:
       - "8000:8000"
     restart: unless-stopped
 
+  # Simulator Service: Now starts first
+  simulator:
+    build:
+      context: ./mavsdk
+      dockerfile: Dockerfile.simulator
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    # No dependency needed, it should start independently
+
+  # MAVSDK Drone Script: Now depends on the simulator
   mavsdk-drone1:
     build:
       context: ./mavsdk
-      dockerfile: Dockerfile.mavsdk # Use the dedicated Dockerfile
-    command: "--port 14540 --drone-id DRONE1 --mqtt-host mosquitto"
+      dockerfile: Dockerfile.mavsdk
+    # This service now correctly depends on the simulator being ready
     depends_on:
       - mosquitto
+      - simulator
+    command: "--port 14540 --drone-id DRONE1 --mqtt-host mosquitto --simulator-host simulator"
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
 
-  simulator:
-    build:
-      context: ./mavsdk
-      dockerfile: Dockerfile.simulator # Use the dedicated Dockerfile
-    depends_on:
-      - mavsdk-drone1
-    environment:
-      - PYTHONUNBUFFERED=1
-    restart: unless-stopped
+# Define the volume for PostgreSQL data persistence
+volumes:
+  postgres_data:
