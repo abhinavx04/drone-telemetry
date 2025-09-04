@@ -39,21 +39,22 @@ services:
     restart: unless-stopped
 
   mavsdk-drone1:
-    build: ./mavsdk
+    build:
+      context: ./mavsdk
+      dockerfile: Dockerfile.mavsdk # Use the dedicated Dockerfile
     command: "--port 14540 --drone-id DRONE1 --mqtt-host mosquitto"
     depends_on:
       - mosquitto
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
-    # REMOVED healthcheck to prevent deadlock
 
   simulator:
-    build: ./mavsdk
-    entrypoint: python3
-    command: drone_simulator.py
+    build:
+      context: ./mavsdk
+      dockerfile: Dockerfile.simulator # Use the dedicated Dockerfile
     depends_on:
-      - mavsdk-drone1 # REMOVED condition
+      - mavsdk-drone1
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped

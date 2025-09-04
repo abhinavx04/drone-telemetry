@@ -2,9 +2,10 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# FIX: Copy all files from the build context (the mavsdk directory)
-COPY . .
+COPY requirements.txt .
+COPY telemetry_mqtt.py .
 
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
+# This container's main purpose is to run the telemetry script
 ENTRYPOINT ["python3", "telemetry_mqtt.py"]
