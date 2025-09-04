@@ -4,7 +4,6 @@ import logging
 from mavsdk import System
 import paho.mqtt.client as mqtt
 
-# --- Setup logging ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -25,7 +24,6 @@ async def main():
     parser.add_argument('--mqtt-port', type=int, default=1883, help='MQTT broker port.')
     args = parser.parse_args()
 
-    # --- MQTT Client Setup ---
     mqtt_client = mqtt.Client(client_id=f"mavsdk-{args.drone_id}")
     mqtt_client.on_connect = on_connect
     try:
@@ -35,32 +33,30 @@ async def main():
         logging.error(f"Could not connect to MQTT broker. Error: {e}")
         return
 
-    # --- MAVSDK Drone Connection ---
-    drone = System()
-    connection_string = f"udp://:{args.port}"
-    await drone.connect(system_address=connection_string)
+    drone = System(mavsdk_server_address='localhost', port=args.port)
 
-    logging.info(f"Opened UDP port {args.port}. Waiting for simulator to connect...")
-
-    # Wait for the drone (our simulator) to connect
-    async for state in drone.core.connection_state():
-        if state.is_connected:
-            logging.info(f"Simulator connected to {args.drone_id}!")
-            break
-
-    # Start publishing telemetry
-    logging.info(f"Starting telemetry stream for {args.drone_id}")
+    logging.info(f"Starting telemetry stream for {args.drone_id}. Listening on UDP port {args.port}...")
+    
+    # This loop will now correctly start the server and wait for a connection.
     async for position in drone.telemetry.position():
-        lat = position.latitude_deg
-        lon = position.longitude_deg
-        alt = position.absolute_altitude_m
+        logging.info(f"Simulator connected to {args.drone_id}!") # This will print once connected
         
-        payload = f'{{"latitude": {lat}, "longitude": {lon}, "altitude": {alt}}}'
-        topic = f"drone/{args.drone_id}/telemetry"
-        
-        mqtt_client.publish(topic, payload)
-        logging.info(f"Published to {topic}: {payload}")
-        # No sleep needed here, as the loop is driven by incoming telemetry
+        # This inner loop will run as long as telemetry is being received
+        while True:
+            lat = position.latitude_deg
+            lon = position.longitude_deg
+            alt = position.absolute_altitude_m
+            
+            payload = f'{{"latitude": {lat}, "longitude": {lon}, "altitude": {alt}}}'
+            topic = f"drone/{args.drone_id}/telemetry"
+            
+            mqtt_client.publish(topic, payload)
+            logging.info(f"Published to {topic}: {payload}")
+            
+            # Wait for the next position update
+            await asyncio.sleep(1)
+            position = await drone.telemetry.position().__anext__()
+
 
 if __name__ == "__main__":
     try:

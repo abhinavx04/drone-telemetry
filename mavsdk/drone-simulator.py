@@ -10,6 +10,9 @@ logging.basicConfig(
 )
 
 async def run_simulator():
+    # Add a small delay to ensure the mavsdk-drone1 service is ready
+    await asyncio.sleep(2)
+
     server = Server(address="mavsdk-drone1", port=14540)
     await server.start()
     logging.info("Simulator server started. Sending data to mavsdk-drone1:14540")
