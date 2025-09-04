@@ -2,42 +2,52 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import DroneCard from './DroneCard';
 
+// Use environment variable for API URL, with a sensible default for local development
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
 const Dashboard = () => {
   const [drones, setDrones] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  const fetchDrones = async () => {
+    // Don't set loading to true on subsequent fetches, to avoid UI flicker
+    // setLoading(true); 
+    
+    try {
+      const response = await axios.get(`${API_URL}/api/v1/drones`);
+      
+      // The backend now returns data that matches our TelemetryOut schema.
+      // We can map this to the format expected by DroneCard.
+      const transformedData = response.data.map(drone => ({
+        id: drone.drone_id,
+        status: drone.status || 'online', // Use real status if available, else default
+        battery: drone.battery_level,
+        mode: drone.flight_mode,
+        location: `${parseFloat(drone.latitude).toFixed(4)}, ${parseFloat(drone.longitude).toFixed(4)}`,
+        lastSeen: new Date(drone.timestamp * 1000).toLocaleTimeString(),
+      }));
+
+      setDrones(transformedData);
+      setError(null); // Clear any previous errors
+    } catch (err) {
+      setError('Failed to fetch drone data. Is the backend service running?');
+      console.error("Fetch error:", err);
+    } finally {
+      setLoading(false); // Only set loading false once
+    }
+  };
+
   useEffect(() => {
-    // Replace with your actual API endpoint to get all drones
-    const fetchDrones = async () => {
-      try {
-        // For now, we'll use a placeholder. Replace this URL with your actual backend endpoint.
-        // Example: 'http://<your-vps-ip>:8000/api/v1/drones'
-        // Since we don't have that endpoint yet, I'll mock the data based on your design.
-        const mockData = [
-          { id: 'DRONE-001', status: 'online', battery: 80, mode: 'MANUAL', location: '40.7072, -74.0040', lastSeen: 'Now' },
-          { id: 'DRONE-002', status: 'emergency', battery: 0, mode: 'RTH', location: '40.7589, -73.9851', lastSeen: '8m ago' },
-          { id: 'DRONE-003', status: 'online', battery: 100, mode: 'ATTI', location: 'N/A', lastSeen: '12m ago' },
-          { id: 'DRONE-004', status: 'offline', battery: 0, mode: 'MANUAL', location: 'N/A', lastSeen: '1h ago' },
-        ];
-        
-        // This simulates a network request
-        await new Promise(resolve => setTimeout(resolve, 500));
+    fetchDrones(); // Fetch data on initial component mount
+    const intervalId = setInterval(fetchDrones, 5000); // Set up polling to refresh data every 5 seconds
 
-        setDrones(mockData);
-        setLoading(false);
-      } catch (err) {
-        setError('Failed to fetch drone data.');
-        setLoading(false);
-      }
-    };
-
-    fetchDrones();
+    return () => clearInterval(intervalId); // Cleanup interval on component unmount
   }, []);
 
-  // Filter drones based on status for the top overview cards
   const onlineCount = drones.filter(d => d.status === 'online').length;
-  const offlineCount = drones.filter(d => d.status === 'offline').length;
+  // These will be 0 for now until we have status logic.
+  const offlineCount = drones.filter(d => d.status === 'offline').length; 
   const emergencyCount = drones.filter(d => d.status === 'emergency').length;
 
   return (
@@ -47,7 +57,13 @@ const Dashboard = () => {
           <h1 className="text-3xl font-bold text-white">System Status</h1>
           <p className="text-gray-400">Real-time drone fleet monitoring</p>
         </div>
-        <button className="px-4 py-2 bg-gray-700 rounded-lg hover:bg-gray-600">Refresh</button>
+        <button 
+          onClick={fetchDrones} 
+          disabled={loading}
+          className="px-4 py-2 bg-gray-700 rounded-lg hover:bg-gray-600 disabled:opacity-50"
+        >
+          {loading ? 'Refreshing...' : 'Refresh'}
+        </button>
       </header>
 
       {/* System Health Overview */}
@@ -71,10 +87,11 @@ const Dashboard = () => {
       </div>
 
       {/* Active Drones Section */}
-      <h2 className="text-2xl font-bold text-white mb-4">Active Drones ({onlineCount + emergencyCount})</h2>
+      <h2 className="text-2xl font-bold text-white mb-4">Active Drones ({drones.length})</h2>
       
-      {loading && <p>Loading drones...</p>}
-      {error && <p className="text-red-500">{error}</p>}
+      {loading && drones.length === 0 && <p className="text-gray-400">Loading initial drone data...</p>}
+      {error && <p className="text-red-500 font-semibold">{error}</p>}
+      {!loading && !error && drones.length === 0 && <p className="text-gray-400">No active drones found. Start the simulation script.</p>}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {drones.map(drone => (
