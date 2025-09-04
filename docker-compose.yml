@@ -40,7 +40,8 @@ services:
 
   mavsdk-drone1:
     build: ./mavsdk
-    command: python3 telemetry_mqtt.py --port 14540 --drone-id DRONE1 --mqtt-host mosquitto
+    # FIX: Only provide the arguments. The Dockerfile's ENTRYPOINT provides the main command.
+    command: "--port 14540 --drone-id DRONE1 --mqtt-host mosquitto"
     depends_on:
       - mosquitto
     environment:
@@ -54,7 +55,10 @@ services:
 
   simulator:
     build: ./mavsdk
-    command: python3 drone_simulator.py
+    # FIX: Simulator also uses the same Dockerfile, so we must change its command too.
+    # We change the ENTRYPOINT by overriding it here.
+    entrypoint: python3
+    command: drone_simulator.py
     depends_on:
       mavsdk-drone1:
         condition: service_healthy
