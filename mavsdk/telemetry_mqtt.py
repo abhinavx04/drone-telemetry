@@ -15,6 +15,7 @@ async def main():
     parser.add_argument('--port', type=int, default=14540, help='Port to listen on.')
     parser.add_argument('--drone-id', required=True, help='Unique ID for the drone.')
     parser.add_argument('--mqtt-host', default='localhost', help='MQTT broker host.')
+    parser.add_argument('--simulator-host', default='127.0.0.1', help='Host IP of the simulator.')
     args = parser.parse_args()
 
     # Use the new callback API version
@@ -25,8 +26,8 @@ async def main():
 
     drone = System()
     
-    logging.info(f"Waiting for drone to connect on UDP port {args.port}...")
-    await drone.connect(system_address=f"udp://:{args.port}")
+    logging.info(f"Waiting for drone to connect at udp://{args.simulator_host}:{args.port}...")
+    await drone.connect(system_address=f"udp://{args.simulator_host}:{args.port}")
 
     logging.info("Drone connected!")
 
