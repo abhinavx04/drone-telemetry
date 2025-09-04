@@ -37,14 +37,17 @@ async def run_simulator():
                 0, 0, 0
             )
 
-            # Send global position
+            # Send global position with all required arguments
             master.mav.global_position_int_send(
                 int(time.time() * 1000),  # time_boot_ms
-                lat,
-                lon,
-                alt, # alt
-                0, 0, 0, # vx, vy, vz
-                0 # hdg
+                lat,                      # lat
+                lon,                      # lon
+                alt,                      # alt
+                0,                        # relative_alt
+                0,                        # vx
+                0,                        # vy
+                0,                        # vz
+                0                         # hdg (heading) - THE FIX IS HERE
             )
             logging.info(f"Sent position: Lat {lat / 1e7:.4f}, Lon {lon / 1e7:.4f}")
 
