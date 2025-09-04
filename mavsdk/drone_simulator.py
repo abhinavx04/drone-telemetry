@@ -11,47 +11,46 @@ logging.basicConfig(
 )
 
 async def run_simulator():
-    # Give the MAVSDK client a moment to start listening
     await asyncio.sleep(5)
 
     try:
-        # Connect outbound to mavsdk-drone1's UDP port. This is where the simulator SENDS data.
         master = mavutil.mavlink_connection('udpout:mavsdk-drone1:14540', dialect='ardupilotmega')
         logging.info("Simulator connected. Sending data to mavsdk-drone1:14540")
     except Exception as e:
         logging.error(f"Failed to connect simulator: {e}")
         return
 
-    # Initial position (latitude/longitude in degrees * 1e7, altitude in mm)
     lat = int(40.7128 * 1e7)
     lon = int(-74.0060 * 1e7)
-    alt = 100000  # 100m in mm
+    alt = 100000
 
+    # FIX: Use a robust method to calculate boot time
+    start_time = time.time()
     logging.info("Simulator is now sending telemetry...")
     while True:
         try:
-            # Send heartbeat (required to keep the connection alive)
+            # Calculate milliseconds since script start
+            time_boot_ms = int((time.time() - start_time) * 1000)
+
             master.mav.heartbeat_send(
                 mavutil.mavlink.MAV_TYPE_QUADROTOR,
                 mavutil.mavlink.MAV_AUTOPILOT_ARDUPILOTMEGA,
                 0, 0, 0
             )
 
-            # Send global position with all required arguments
             master.mav.global_position_int_send(
-                int(time.time() * 1000),  # time_boot_ms
-                lat,                      # lat
-                lon,                      # lon
-                alt,                      # alt
-                0,                        # relative_alt
-                0,                        # vx
-                0,                        # vy
-                0,                        # vz
-                0                         # hdg (heading) - THE FIX IS HERE
+                time_boot_ms, # Guaranteed to be a positive integer
+                lat,
+                lon,
+                alt,
+                0, # relative_alt
+                0, # vx
+                0, # vy
+                0, # vz
+                0  # hdg
             )
             logging.info(f"Sent position: Lat {lat / 1e7:.4f}, Lon {lon / 1e7:.4f}")
 
-            # Slightly move the drone for the next update
             lat += int(random.uniform(-100, 100))
             lon += int(random.uniform(-100, 100))
 
@@ -59,7 +58,7 @@ async def run_simulator():
 
         except Exception as e:
             logging.error(f"Error during simulation loop: {e}")
-            await asyncio.sleep(5) # Wait before retrying
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
     try:
