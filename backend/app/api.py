@@ -20,4 +20,4 @@ async def read_all_drones_status(db: AsyncSession = Depends(get_db)):
         return drones if drones else []
     except Exception as e:
         logger.error(f"API Error fetching all drones status: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server err
