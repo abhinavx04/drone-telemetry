@@ -2,6 +2,8 @@ import asyncio
 import logging
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from app.api import router as api_router
 from sqlalchemy.exc import SQLAlchemyError
 from app.config import settings
 from app.db import get_db, Base, engine
@@ -11,6 +13,18 @@ from app.utils import setup_logging
 from app.mqtt import mqtt_listener
 
 app = FastAPI(title="Drone Telemetry API", version="1.0.0")
+
+# CORS Middleware to allow the React frontend to connect
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
+# Include versioned API router
+app.include_router(api_router, prefix="/api/v1")
 
 setup_logging(settings.log_level)
 
@@ -37,6 +51,10 @@ async def shutdown_event():
 @app.get("/health", summary="Health check")
 async def health_check():
     return {"status": "ok"}
+
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to the Drone Telemetry API"}
 
 @app.post("/telemetry/", response_model=TelemetryOut, status_code=201)
 async def post_telemetry(telemetry: TelemetryIn, db=Depends(get_db)):
