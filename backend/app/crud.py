@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy import select
+from sqlalchemy import select, text
 from typing import List
 import logging
 from app.models import Telemetry
@@ -9,27 +9,12 @@ from app.schemas import TelemetryIn
 logger = logging.getLogger(__name__)
 
 async def create_telemetry(db: AsyncSession, telemetry: TelemetryIn) -> Telemetry:
-    """
-    Create a new telemetry record.
-    
-    Args:
-        db: Database session
-        telemetry: Telemetry data with validated timestamp (integer Unix timestamp)
-        
-    Returns:
-        Created Telemetry record
-        
-    Raises:
-        SQLAlchemyError: If database operation fails
-        ValueError: If timestamp is not an integer
-    """
+    """... (existing function remains unchanged) ..."""
     try:
-        # Ensure timestamp is integer (should be handled by schema validator, but double-check)
         if not isinstance(telemetry.timestamp, int):
             logger.error(f"Invalid timestamp type: {type(telemetry.timestamp)}")
             raise ValueError("Timestamp must be an integer Unix timestamp")
-            
-        # Log the data being inserted
+        
         logger.debug(f"Creating telemetry record: drone_id={telemetry.drone_id}, timestamp={telemetry.timestamp}")
         
         db_obj = Telemetry(**telemetry.dict())
@@ -49,17 +34,7 @@ async def create_telemetry(db: AsyncSession, telemetry: TelemetryIn) -> Telemetr
         raise
 
 async def get_recent_telemetry(db: AsyncSession, drone_id: str, limit: int = 10) -> List[Telemetry]:
-    """
-    Get recent telemetry records for a drone.
-    
-    Args:
-        db: Database session
-        drone_id: ID of the drone
-        limit: Maximum number of records to return
-        
-    Returns:
-        List of Telemetry records
-    """
+    """... (existing function remains unchanged) ..."""
     try:
         logger.debug(f"Fetching recent telemetry for drone {drone_id}, limit={limit}")
         stmt = select(Telemetry).where(Telemetry.drone_id == drone_id).order_by(Telemetry.timestamp.desc()).limit(limit)
@@ -69,4 +44,24 @@ async def get_recent_telemetry(db: AsyncSession, drone_id: str, limit: int = 10)
         return records
     except Exception as e:
         logger.error(f"Error fetching telemetry records: {e}")
+        raise
+
+async def get_all_drones_latest_telemetry(db: AsyncSession) -> List[Telemetry]:
+    """
+    Gets the most recent telemetry record for every unique drone.
+    This uses a PostgreSQL-specific feature 'DISTINCT ON' for efficiency.
+    """
+    try:
+        logger.debug("Fetching latest telemetry for all drones")
+        query = text("""
+            SELECT DISTINCT ON (drone_id) *
+            FROM telemetry
+            ORDER BY drone_id, timestamp DESC;
+        """)
+        result = await db.execute(query)
+        records = result.mappings().all() # Use .mappings() to get dict-like rows
+        logger.debug(f"Found latest telemetry for {len(records)} unique drones")
+        return records
+    except Exception as e:
+        logger.error(f"Error fetching latest telemetry for all drones: {e}")
         raise
