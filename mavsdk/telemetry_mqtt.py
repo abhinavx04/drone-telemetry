@@ -2,11 +2,12 @@ import asyncio
 import argparse
 import logging
 from mavsdk import System
-import paho.mqtt.client as mqtt
+# Correct import for paho-mqtt v2+
+from paho.mqtt import client as mqtt_module
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def on_connect(client, userdata, flags, rc):
+def on_connect(client, userdata, flags, rc, properties):
     logging.info(f"Connected to MQTT Broker with result code {rc}")
 
 async def main():
@@ -16,7 +17,8 @@ async def main():
     parser.add_argument('--mqtt-host', default='localhost', help='MQTT broker host.')
     args = parser.parse_args()
 
-    mqtt_client = mqtt.Client(client_id=f"mavsdk-{args.drone_id}")
+    # Use the new callback API version
+    mqtt_client = mqtt_module.Client(callback_api_version=mqtt_module.CallbackAPIVersion.VERSION2, client_id=f"mavsdk-{args.drone_id}")
     mqtt_client.on_connect = on_connect
     mqtt_client.connect(args.mqtt_host, 1883, 60)
     mqtt_client.loop_start()
