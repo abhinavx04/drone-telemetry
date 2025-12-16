@@ -57,6 +57,13 @@ class MavlinkIngestor:
         parser.robust_parsing = settings.mavlink_robust_parsing
         parser.srcSystem = 255
         parser.srcComponent = 0
+        logger.info(
+            "MAVLink UDP ingestor binding %s:%s (dialect=%s robust=%s)",
+            settings.mavlink_udp_host,
+            settings.mavlink_udp_port,
+            settings.mavlink_dialect,
+            settings.mavlink_robust_parsing,
+        )
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
