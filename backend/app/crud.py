@@ -15,8 +15,21 @@ async def create_telemetry(db: AsyncSession, telemetry: TelemetryIn) -> Telemetr
         if telemetry.timestamp is None or not isinstance(telemetry.timestamp, int):
             raise ValueError("Timestamp must be an integer Unix timestamp")
         
-        payload = telemetry.model_dump()
-        payload["is_online"] = telemetry.is_online if telemetry.is_online is not None else True
+        # Only include fields that exist in the Telemetry model
+        # This prevents SQLAlchemy errors from unknown keyword arguments
+        payload = {
+            "drone_id": telemetry.drone_id,
+            "timestamp": telemetry.timestamp,
+            "latitude": telemetry.latitude,
+            "longitude": telemetry.longitude,
+            "absolute_altitude_m": telemetry.absolute_altitude_m,
+            "battery_percentage": telemetry.battery_percentage,
+            "flight_mode": telemetry.flight_mode,
+            "is_online": telemetry.is_online if telemetry.is_online is not None else True,
+            "rc_lost": telemetry.rc_lost,
+            "gps_fix": telemetry.gps_fix,
+            "is_emergency": telemetry.is_emergency,
+        }
         logger.debug(
             "Creating telemetry record: drone_id=%s, timestamp=%s", telemetry.drone_id, telemetry.timestamp
         )

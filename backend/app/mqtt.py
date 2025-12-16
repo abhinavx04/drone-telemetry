@@ -148,6 +148,11 @@ async def _persist_if_possible(normalized: NormalizedTelemetry) -> None:
         logger.debug("Skipping DB persist for %s because position is missing/invalid", normalized.drone_id)
         return
 
+    # Map gps_lost to gps_fix (inverted boolean)
+    gps_fix = None
+    if normalized.flags.gps_lost is not None:
+        gps_fix = not normalized.flags.gps_lost
+
     db_payload = TelemetryIn(
         drone_id=normalized.drone_id,
         latitude=normalized.position.lat,
@@ -157,6 +162,9 @@ async def _persist_if_possible(normalized: NormalizedTelemetry) -> None:
         battery_percentage=normalized.battery_pct,
         flight_mode=normalized.flight_mode,
         is_online=True,
+        rc_lost=normalized.flags.rc_lost,
+        gps_fix=gps_fix,
+        is_emergency=normalized.flags.is_emergency,
     )
 
     try:

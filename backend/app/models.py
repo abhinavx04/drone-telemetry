@@ -12,3 +12,6 @@ class Telemetry(Base):
     battery_percentage = Column(Float, nullable=True)
     flight_mode = Column(String(50), nullable=True)  # manual, atti, rth
     is_online = Column(Boolean, default=True)
+    rc_lost = Column(Boolean, nullable=True)
+    gps_fix = Column(Boolean, nullable=True)  # True = GPS fix available, False/None = GPS lost
+    is_emergency = Column(Boolean, nullable=True)
