@@ -25,9 +25,11 @@ async def main():
     mqtt_client.loop_start()
 
     drone = System()
-    
-    logging.info(f"Waiting for drone to connect at udp://{args.simulator_host}:{args.port}...")
-    await drone.connect(system_address=f"udp://{args.simulator_host}:{args.port}")
+
+    # Real drone mode: listen for a vehicle sending MAVLink to this port.
+    # Use udpin so the vehicle can initiate the connection.
+    logging.info(f"Waiting for drone to connect at udpin://0.0.0.0:{args.port}...")
+    await drone.connect(system_address=f"udpin://0.0.0.0:{args.port}")
 
     logging.info("Drone connected!")
 
