@@ -31,20 +31,47 @@ async def create_telemetry(db: AsyncSession, telemetry: TelemetryIn) -> Telemetr
             "is_emergency": telemetry.is_emergency,
         }
         logger.debug(
-            "Creating telemetry record: drone_id=%s, timestamp=%s", telemetry.drone_id, telemetry.timestamp
+            "Upserting telemetry record: drone_id=%s, timestamp=%s", telemetry.drone_id, telemetry.timestamp
         )
         
-        db_obj = Telemetry(**payload)
-        db.add(db_obj)
+        # Use PostgreSQL UPSERT (ON CONFLICT DO UPDATE) to handle duplicate timestamps
+        # This is necessary because multiple MAVLink streams (position, battery, etc.)
+        # may trigger persistence with the same timestamp concurrently
+        insert_stmt = text("""
+            INSERT INTO telemetry (
+                drone_id, timestamp, latitude, longitude, absolute_altitude_m,
+                battery_percentage, flight_mode, is_online, rc_lost, gps_fix, is_emergency
+            ) VALUES (
+                :drone_id, :timestamp, :latitude, :longitude, :absolute_altitude_m,
+                :battery_percentage, :flight_mode, :is_online, :rc_lost, :gps_fix, :is_emergency
+            )
+            ON CONFLICT (drone_id, timestamp) DO UPDATE SET
+                latitude = EXCLUDED.latitude,
+                longitude = EXCLUDED.longitude,
+                absolute_altitude_m = EXCLUDED.absolute_altitude_m,
+                battery_percentage = EXCLUDED.battery_percentage,
+                flight_mode = EXCLUDED.flight_mode,
+                is_online = EXCLUDED.is_online,
+                rc_lost = EXCLUDED.rc_lost,
+                gps_fix = EXCLUDED.gps_fix,
+                is_emergency = EXCLUDED.is_emergency
+            RETURNING *
+        """)
         
         try:
+            result = await db.execute(insert_stmt, payload)
             await db.commit()
-            await db.refresh(db_obj)
-            logger.info(f"Successfully created telemetry record for drone {telemetry.drone_id}")
-            return db_obj
+            row = result.mappings().first()
+            if row:
+                # Construct a Telemetry object from the returned row for compatibility
+                db_obj = Telemetry(**dict(row))
+                logger.debug(f"Successfully upserted telemetry record for drone {telemetry.drone_id}")
+                return db_obj
+            else:
+                raise ValueError("UPSERT returned no row")
         except SQLAlchemyError as e:
             await db.rollback()
-            logger.error(f"Database error while creating telemetry: {e}")
+            logger.error(f"Database error while upserting telemetry: {e}")
             raise e
     except Exception as e:
         logger.error(f"Unexpected error in create_telemetry: {e}")
