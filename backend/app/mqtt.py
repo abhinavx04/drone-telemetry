@@ -79,6 +79,7 @@ def _normalize_payload(raw: TelemetryIn) -> NormalizedTelemetry:
         drone_id=raw.drone_id.strip(),
         source_timestamp=source_ts,
         ingest_timestamp=now,
+        received_timestamp=now,
         position=position,
         battery_pct=battery_pct,
         flight_mode=_normalize_flight_mode(raw.flight_mode),
@@ -90,6 +91,7 @@ def normalized_to_payload(normalized: NormalizedTelemetry, include_ingest_source
     payload = {
         "drone_id": normalized.drone_id,
         "timestamp": normalized.source_timestamp,
+        "received_timestamp": int(normalized.received_timestamp),
         "latitude": normalized.position.lat if normalized.position else None,
         "longitude": normalized.position.lon if normalized.position else None,
         "absolute_altitude_m": normalized.position.alt_m if normalized.position else None,

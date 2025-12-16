@@ -40,9 +40,7 @@ async def startup_event():
         await conn.run_sync(Base.metadata.create_all)
     # Start MQTT listener in background
     app.state.mqtt_task = asyncio.create_task(mqtt_listener())
-    # Start MAVLink UDP ingestor in a daemon thread; uses the server loop for callbacks.
-    loop = asyncio.get_running_loop()
-    start_ingestor(loop)
+    await start_ingestor()
     logging.getLogger("main").info("Service started")
 
 @app.on_event("shutdown")
@@ -53,7 +51,7 @@ async def shutdown_event():
             await app.state.mqtt_task
         except asyncio.CancelledError:
             pass
-    stop_ingestor()
+    await stop_ingestor()
     await engine.dispose()
     logging.getLogger("main").info("Service shutdown")
 

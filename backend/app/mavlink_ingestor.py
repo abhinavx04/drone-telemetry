@@ -1,259 +1,279 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
-import socket
-import threading
 import time
 from typing import Dict, Optional
 
-from pymavlink import mavutil
+from mavsdk import System
+from mavsdk.telemetry import FlightMode as MavsdkFlightMode
 
 from app.config import settings
-from app.mqtt import publish_normalized, normalized_to_payload, persist_normalized
+from app.mqtt import normalized_to_payload, persist_normalized, publish_normalized
 from app.schemas import NormalizedTelemetry, Position, TelemetryDerived, TelemetryFlags
-from app.state import telemetry_cache
+from app.state import mavsdk_state, telemetry_cache
 
-logger = logging.getLogger("mavlink_ingestor")
+logger = logging.getLogger("mavsdk_ingestor")
+
+# MAVSDK is the authoritative telemetry source.
+# Raw MAVLink parsing is intentionally not used due to SysID=255 GCS proxy streams.
+
+_FLIGHT_MODE_MAP: Dict[MavsdkFlightMode, str] = {
+    MavsdkFlightMode.HOLD: "POS_HOLD",
+    MavsdkFlightMode.READY: "POS_HOLD",
+    MavsdkFlightMode.TAKEOFF: "MISSION",
+    MavsdkFlightMode.MISSION: "MISSION",
+    MavsdkFlightMode.RETURN_TO_LAUNCH: "RTL",
+    MavsdkFlightMode.LAND: "LAND",
+    MavsdkFlightMode.OFFBOARD: "OFFBOARD",
+    MavsdkFlightMode.FOLLOW_ME: "MISSION",
+    MavsdkFlightMode.UNKNOWN: "UNKNOWN",
+}
 
 
-class _PerDroneStats:
+def _map_flight_mode(mode: Optional[MavsdkFlightMode]) -> Optional[str]:
+    if mode is None:
+        return None
+    return _FLIGHT_MODE_MAP.get(mode, mode.name if hasattr(mode, "name") else str(mode))
+
+
+class MavsdkIngestor:
+    """
+    Async MAVSDK-based telemetry ingestor. Subscribes to PX4 telemetry via the GCS
+    proxy, normalizes fields, updates in-memory cache/DB, and publishes MQTT at a
+    controlled rate. Liveness is derived from telemetry timestamps; heartbeats are
+    intentionally not used.
+    """
+
     def __init__(self) -> None:
-        self.last_seen_ts: Optional[float] = None
-        self.packets: int = 0
-        self.messages: int = 0
+        self._task: Optional[asyncio.Task] = None
+        self._stop = asyncio.Event()
+        self._publish_interval = 1.0 / settings.publish_rate_hz if settings.publish_rate_hz > 0 else 0
+        self._last_publish_ts: float = 0.0
+        self._latest: Dict[str, Optional[object]] = {
+            "position": None,
+            "battery_pct": None,
+            "flight_mode": None,
+            "ground_speed_mps": None,
+            "climb_rate_mps": None,
+            "heading_deg": None,
+            "source_timestamp": None,
+        }
 
-
-class MavlinkIngestor:
-    """
-    Dedicated daemon thread that listens for raw MAVLink over UDP, parses frames
-    with robust parsing, normalizes telemetry, and publishes it to the in-memory
-    cache and MQTT. It does NOT require heartbeats, and it tolerates mixed v1/v2.
-    """
-
-    def __init__(self, loop):
-        self.loop = loop
-        self.stop_event = threading.Event()
-        self.thread: Optional[threading.Thread] = None
-        self.stats: Dict[str, _PerDroneStats] = {}
-        self._last_published: Dict[str, dict] = {}
-
-    def start(self) -> None:
-        if self.thread and self.thread.is_alive():
+    async def start(self) -> None:
+        if self._task and not self._task.done():
             return
-        self.thread = threading.Thread(target=self._run, name="mavlink-ingestor", daemon=True)
-        self.thread.start()
-        logger.info("Started MAVLink UDP ingestor on %s:%s", settings.mavlink_udp_host, settings.mavlink_udp_port)
-
-    def stop(self) -> None:
-        self.stop_event.set()
-        if self.thread:
-            self.thread.join(timeout=2)
-        logger.info("Stopped MAVLink UDP ingestor")
-
-    def _run(self) -> None:
-        mavutil.set_dialect(settings.mavlink_dialect)
-        parser = mavutil.mavlink.MAVLink(None)
-        parser.robust_parsing = settings.mavlink_robust_parsing
-        parser.srcSystem = 255
-        parser.srcComponent = 0
+        self._stop.clear()
+        self._task = asyncio.create_task(self._run(), name="mavsdk-ingestor")
         logger.info(
-            "MAVLink UDP ingestor binding %s:%s (dialect=%s robust=%s)",
-            settings.mavlink_udp_host,
-            settings.mavlink_udp_port,
-            settings.mavlink_dialect,
-            settings.mavlink_robust_parsing,
+            "[boot] DRONE_ID=%s LABEL=%s MAVSDK_URL=%s PUBLISH_RATE_HZ=%s",
+            settings.drone_id,
+            settings.drone_label,
+            settings.mavsdk_url,
+            settings.publish_rate_hz,
         )
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((settings.mavlink_udp_host, settings.mavlink_udp_port))
-        sock.settimeout(1.0)
-
-        while not self.stop_event.is_set():
+    async def stop(self) -> None:
+        self._stop.set()
+        if self._task:
+            self._task.cancel()
             try:
-                data, addr = sock.recvfrom(65535)
-            except socket.timeout:
-                continue
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        mavsdk_state.update({"connected": False, "status": "disconnected"})
+
+    async def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                mavsdk_state.update(
+                    {"connected": False, "status": "connecting", "last_error": None}
+                )
+                drone = System()
+                await drone.connect(system_address=settings.mavsdk_url)
+                mavsdk_state.update(
+                    {
+                        "connected": True,
+                        "status": "connected",
+                        "last_connect_ts": time.time(),
+                    }
+                )
+                await self._consume(drone)
+            except asyncio.CancelledError:
+                break
             except Exception as exc:  # noqa: BLE001
-                logger.warning("UDP recv error: %s", exc)
+                logger.error("MAVSDK connection error: %s", exc)
+                mavsdk_state.update(
+                    {"connected": False, "status": "disconnected", "last_error": str(exc)}
+                )
+                await asyncio.sleep(settings.mavsdk_connect_retry_s)
+
+    async def _consume(self, drone: System) -> None:
+        tasks = [
+            asyncio.create_task(self._read_positions(drone)),
+            asyncio.create_task(self._read_battery(drone)),
+            asyncio.create_task(self._read_flight_mode(drone)),
+            asyncio.create_task(self._read_velocity(drone)),
+            asyncio.create_task(self._read_heading(drone)),
+        ]
+
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+        for t in pending:
+            t.cancel()
+        for t in done:
+            if t.cancelled():
                 continue
+            exc = t.exception()
+            if exc:
+                logger.error("MAVSDK stream error: %s", exc)
+                raise exc
 
-            src_ip, src_port = addr[0], addr[1]
-            drone_id = f"drone_{src_ip}_{src_port}"
-            now = time.time()
-            stats = self.stats.setdefault(drone_id, _PerDroneStats())
-            stats.last_seen_ts = now
-            stats.packets += 1
-
-            for byte in data:
-                try:
-                    msg = parser.parse_char(bytes([byte]))
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("Parse error for %s: %s", drone_id, exc)
-                    continue
-
-                if not msg:
-                    continue
-                stats.messages += 1
-                telemetry = self._to_normalized(drone_id, msg, now)
-                if telemetry is None:
-                    continue
-                self._deliver(telemetry)
-
-    def _deliver(self, telemetry: NormalizedTelemetry) -> None:
-        # Update cache asynchronously on the FastAPI loop
-        try:
-            import asyncio
-
-            # Ensure we target the server's loop without blocking it.
-            asyncio.run_coroutine_threadsafe(telemetry_cache.update(telemetry), self.loop)
-            asyncio.run_coroutine_threadsafe(persist_normalized(telemetry), self.loop)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Failed to schedule cache update for %s: %s", telemetry.drone_id, exc)
-
-        # Publish to MQTT only when data changes to avoid chatter
-        payload = normalized_to_payload(telemetry, include_ingest_source=True)
-        last_payload = self._last_published.get(telemetry.drone_id)
-        if last_payload != payload:
-            publish_normalized(telemetry, payload)
-            self._last_published[telemetry.drone_id] = payload
-
-    def _to_normalized(self, drone_id: str, msg, ingest_ts: float) -> Optional[NormalizedTelemetry]:
-        mtype = msg.get_type()
-        # Default fields
-        position = None
-        battery_pct = None
-        flight_mode = None
-        flags = TelemetryFlags(gps_lost=False, rc_lost=None, is_emergency=False)
-        derived = TelemetryDerived(ground_speed_mps=None, climb_rate_mps=None, heading_deg=None)
-
-        source_ts = int(ingest_ts)
-        try:
-            if hasattr(msg, "time_boot_ms") and msg.time_boot_ms is not None:
-                source_ts = int(msg.time_boot_ms / 1000)
-            elif hasattr(msg, "time_usec") and msg.time_usec is not None:
-                source_ts = int(msg.time_usec / 1_000_000)
-        except Exception:
-            source_ts = int(ingest_ts)
-
-        if mtype == "HEARTBEAT":
-            # Do not depend on heartbeats for readiness; best-effort flight mode only.
+    async def _read_positions(self, drone: System) -> None:
+        async for pos in drone.telemetry.position():
+            if self._stop.is_set():
+                break
+            self._latest["position"] = {
+                "lat": pos.latitude_deg,
+                "lon": pos.longitude_deg,
+                "alt_m": pos.absolute_altitude_m,
+            }
+            source_ts = None
             try:
-                flight_mode = mavutil.mode_string_v10(msg)
+                source_ts = int(pos.timestamp_us / 1_000_000) if pos.timestamp_us else None
             except Exception:
-                flight_mode = None
+                source_ts = None
+            await self._maybe_publish(source_ts)
 
-        elif mtype == "GLOBAL_POSITION_INT":
-            lat = msg.lat / 1e7 if msg.lat is not None else None
-            lon = msg.lon / 1e7 if msg.lon is not None else None
-            alt_m = msg.alt / 1000.0 if msg.alt is not None else None
-            if lat is not None and lon is not None:
-                position = Position(lat=lat, lon=lon, alt_m=alt_m)
-                flags.gps_lost = False
-            else:
-                flags.gps_lost = True
-
+    async def _read_battery(self, drone: System) -> None:
+        async for bat in drone.telemetry.battery():
+            if self._stop.is_set():
+                break
+            pct = None
             try:
-                if msg.vx is not None and msg.vy is not None:
-                    vx = msg.vx / 100.0
-                    vy = msg.vy / 100.0
-                    derived.ground_speed_mps = math.sqrt(vx * vx + vy * vy)
-                if msg.vz is not None:
-                    derived.climb_rate_mps = -msg.vz / 100.0
-                if getattr(msg, "hdg", None) not in (None, 65535):
-                    derived.heading_deg = msg.hdg / 100.0
+                if bat.remaining_percent is not None:
+                    pct = max(0.0, min(100.0, float(bat.remaining_percent * 100.0)))
             except Exception:
-                pass
+                pct = None
+            self._latest["battery_pct"] = pct
+            await self._maybe_publish()
 
-        elif mtype == "LOCAL_POSITION_NED":
+    async def _read_flight_mode(self, drone: System) -> None:
+        async for fm in drone.telemetry.flight_mode():
+            if self._stop.is_set():
+                break
+            self._latest["flight_mode"] = _map_flight_mode(fm)
+            await self._maybe_publish()
+
+    async def _read_velocity(self, drone: System) -> None:
+        async for vel in drone.telemetry.velocity_ned():
+            if self._stop.is_set():
+                break
             try:
-                vx = float(msg.vx)
-                vy = float(msg.vy)
-                vz = float(msg.vz)
-                derived.ground_speed_mps = math.sqrt(vx * vx + vy * vy)
-                derived.climb_rate_mps = -vz
+                vx = float(vel.north_m_s)
+                vy = float(vel.east_m_s)
+                vz = float(vel.down_m_s)
+                self._latest["ground_speed_mps"] = math.sqrt(vx * vx + vy * vy)
+                self._latest["climb_rate_mps"] = -vz
             except Exception:
-                pass
+                self._latest["ground_speed_mps"] = None
+                self._latest["climb_rate_mps"] = None
+            await self._maybe_publish()
 
-        elif mtype == "SYS_STATUS":
-            if msg.battery_remaining is not None and msg.battery_remaining >= 0:
-                battery_pct = max(0.0, min(100.0, float(msg.battery_remaining)))
-            if battery_pct is not None and battery_pct <= settings.emergency_battery_pct:
-                flags.is_emergency = True
-
-        elif mtype == "VFR_HUD":
+    async def _read_heading(self, drone: System) -> None:
+        async for att in drone.telemetry.attitude_euler():
+            if self._stop.is_set():
+                break
             try:
-                derived.ground_speed_mps = float(msg.groundspeed)
+                self._latest["heading_deg"] = float(att.yaw_deg)
             except Exception:
-                pass
-            try:
-                if msg.heading not in (None, 361):
-                    derived.heading_deg = float(msg.heading)
-            except Exception:
-                pass
-            try:
-                derived.climb_rate_mps = float(msg.climb)
-            except Exception:
-                pass
+                self._latest["heading_deg"] = None
+            await self._maybe_publish()
 
-        elif mtype == "ATTITUDE":
-            try:
-                derived.heading_deg = math.degrees(float(msg.yaw))
-            except Exception:
-                pass
+    async def _maybe_publish(self, source_ts: Optional[int] = None) -> None:
+        now = time.time()
+        mavsdk_state["last_message_ts"] = now
+        mavsdk_state["messages"] = int(mavsdk_state.get("messages") or 0) + 1
 
-        elif mtype == "GPS_RAW_INT":
-            fix_type = getattr(msg, "fix_type", None)
-            if fix_type is not None and fix_type < 3:
-                flags.gps_lost = True
-            elif fix_type is not None:
-                flags.gps_lost = False
+        if source_ts:
+            self._latest["source_timestamp"] = source_ts
 
-        else:
-            # Ignore unsupported messages safely
-            return None
+        if self._publish_interval > 0 and (now - self._last_publish_ts) < self._publish_interval:
+            return
+
+        normalized = self._build_normalized(now)
+        if normalized is None:
+            return
+
+        self._last_publish_ts = now
+        mavsdk_state["published"] = int(mavsdk_state.get("published") or 0) + 1
+        payload = normalized_to_payload(normalized, include_ingest_source=True)
+        await asyncio.gather(
+            telemetry_cache.update(normalized),
+            persist_normalized(normalized),
+            asyncio.to_thread(publish_normalized, normalized, payload),
+        )
+
+    def _build_normalized(self, now: float) -> Optional[NormalizedTelemetry]:
+        position_obj = None
+        flags = TelemetryFlags(gps_lost=True, rc_lost=None, is_emergency=False)
+
+        pos = self._latest.get("position")
+        if pos:
+            position_obj = Position(lat=pos["lat"], lon=pos["lon"], alt_m=pos.get("alt_m"))
+            flags.gps_lost = False
+
+        battery_pct = self._latest.get("battery_pct")
+        if battery_pct is not None and battery_pct <= settings.emergency_battery_pct:
+            flags.is_emergency = True
+
+        derived = TelemetryDerived(
+            ground_speed_mps=self._latest.get("ground_speed_mps"),
+            climb_rate_mps=self._latest.get("climb_rate_mps"),
+            heading_deg=self._latest.get("heading_deg"),
+        )
+
+        source_ts = self._latest.get("source_timestamp") or int(now)
 
         return NormalizedTelemetry(
-            drone_id=drone_id,
-            source_timestamp=source_ts,
-            ingest_timestamp=ingest_ts,
-            position=position,
+            drone_id=settings.drone_id.strip(),
+            source_timestamp=int(source_ts),
+            ingest_timestamp=now,
+            received_timestamp=now,
+            position=position_obj,
             battery_pct=battery_pct,
-            flight_mode=flight_mode,
+            flight_mode=self._latest.get("flight_mode"),
             flags=flags,
             derived=derived,
         )
 
-    def get_stats(self) -> Dict[str, dict]:
+    def get_stats(self) -> Dict[str, object]:
         if not settings.ingest_debug_stats:
             return {}
-        out: Dict[str, dict] = {}
-        for drone_id, s in self.stats.items():
-            out[drone_id] = {
-                "last_seen_ts": s.last_seen_ts,
-                "packets": s.packets,
-                "messages": s.messages,
-            }
-        return out
+        return {
+            "last_message_ts": mavsdk_state.get("last_message_ts"),
+            "messages": mavsdk_state.get("messages"),
+            "published": mavsdk_state.get("published"),
+            "publish_interval_s": self._publish_interval,
+        }
 
 
-_ingestor: Optional[MavlinkIngestor] = None
+_ingestor: Optional[MavsdkIngestor] = None
 
 
-def start_ingestor(loop) -> None:
+async def start_ingestor() -> None:
     global _ingestor
     if _ingestor is None:
-        _ingestor = MavlinkIngestor(loop)
-    _ingestor.start()
+        _ingestor = MavsdkIngestor()
+    await _ingestor.start()
 
 
-def stop_ingestor() -> None:
+async def stop_ingestor() -> None:
     if _ingestor:
-        _ingestor.stop()
+        await _ingestor.stop()
 
 
-def get_ingestor_stats() -> Dict[str, dict]:
+def get_ingestor_stats() -> Dict[str, object]:
     if _ingestor:
         return _ingestor.get_stats()
     return {}
