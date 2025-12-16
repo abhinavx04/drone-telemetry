@@ -28,6 +28,19 @@ mqtt_state: Dict[str, Optional[object]] = {
     "last_error": None,
 }
 
+# Updated by the MAVSDK ingestor for health and debug reporting.
+mavsdk_state: Dict[str, Optional[object]] = {
+    "connected": False,
+    "status": "disconnected",
+    "last_message_ts": None,
+    "last_connect_ts": None,
+    "last_error": None,
+    "messages": 0,
+    "published": 0,
+    "drone_id": settings.drone_id,
+    "drone_label": settings.drone_label,
+}
+
 
 class TelemetryCache:
     """
@@ -77,7 +90,8 @@ class TelemetryCache:
                 },
             )
 
-            entry["last_seen_ts"] = telemetry.ingest_timestamp
+            entry["last_seen_ts"] = telemetry.received_timestamp or telemetry.ingest_timestamp
+            entry["received_timestamp"] = telemetry.received_timestamp
             entry["source_timestamp"] = telemetry.source_timestamp
             if telemetry.position is not None:
                 entry["position"] = telemetry.position.model_dump()
@@ -127,6 +141,7 @@ class TelemetryCache:
                 status=status,
                 last_seen_ts=int(entry["last_seen_ts"]) if entry.get("last_seen_ts") else None,
                 source_timestamp=int(entry["source_timestamp"]) if entry.get("source_timestamp") else None,
+                received_timestamp=int(entry["received_timestamp"]) if entry.get("received_timestamp") else None,
                 position=Position(**entry["position"]) if entry.get("position") else None,
                 battery=BatteryOut(pct=entry.get("battery_pct"), voltage_v=None),
                 flight_mode=entry.get("flight_mode"),
@@ -157,5 +172,37 @@ def get_mqtt_snapshot() -> dict:
         "last_message_ts": last_ts,
         "lag_ms": lag_ms,
         "last_error": mqtt_state.get("last_error"),
+    }
+
+
+def get_mavsdk_snapshot() -> dict:
+    """
+    Returns a copy of the MAVSDK connectivity state with computed lag.
+    """
+    last_ts = mavsdk_state.get("last_message_ts")
+    now = time.time()
+    lag_ms = None
+    if last_ts:
+        lag_ms = int((now - float(last_ts)) * 1000)
+    status = mavsdk_state.get("status") or "disconnected"
+    if last_ts:
+        age = now - float(last_ts)
+        if age > settings.mavsdk_disconnected_after_s:
+            status = "disconnected"
+        elif age > settings.mavsdk_degraded_after_s:
+            status = "degraded"
+        else:
+            status = "connected"
+    return {
+        "connected": mavsdk_state.get("connected", False),
+        "status": status,
+        "last_message_ts": last_ts,
+        "lag_ms": lag_ms,
+        "last_connect_ts": mavsdk_state.get("last_connect_ts"),
+        "last_error": mavsdk_state.get("last_error"),
+        "messages": mavsdk_state.get("messages"),
+        "published": mavsdk_state.get("published"),
+        "drone_id": mavsdk_state.get("drone_id"),
+        "drone_label": mavsdk_state.get("drone_label"),
     }
 

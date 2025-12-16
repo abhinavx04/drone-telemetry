@@ -6,6 +6,15 @@ class Settings(BaseSettings):
     mqtt_port: int = Field(1883, alias="MQTT_PORT")
     mqtt_topic: str = Field("drone/+/telemetry", alias="MQTT_TOPIC")
     mqtt_reconnect_delay: int = Field(5, alias="MQTT_RECONNECT_DELAY")
+    publish_rate_hz: float = Field(5.0, alias="PUBLISH_RATE_HZ")
+    ingest_rate_hz: float = Field(0.0, alias="INGEST_RATE_HZ")  # 0 = unlimited
+
+    drone_id: str = Field("drone_alpha", alias="DRONE_ID")
+    drone_label: str = Field("PX4_QUAD_X", alias="DRONE_LABEL")
+    mavsdk_url: str = Field("udp://0.0.0.0:14540", alias="MAVSDK_URL")
+    mavsdk_connect_retry_s: int = Field(3, alias="MAVSDK_CONNECT_RETRY_SEC")
+    mavsdk_degraded_after_s: int = Field(5, alias="MAVSDK_DEGRADED_AFTER_SEC")
+    mavsdk_disconnected_after_s: int = Field(15, alias="MAVSDK_DISCONNECTED_AFTER_SEC")
     postgres_user: str = Field("postgres", alias="POSTGRES_USER")
     postgres_password: str = Field("postgres", alias="POSTGRES_PASSWORD")
     postgres_db: str = Field("telemetry", alias="POSTGRES_DB")
@@ -19,10 +28,6 @@ class Settings(BaseSettings):
     ingest_backlog_max: int = Field(100, alias="INGEST_BACKLOG_MAX")
     emergency_battery_pct: float = Field(5.0, alias="EMERGENCY_BATTERY_PCT")
     ws_push_hz: float = Field(5.0, alias="WS_PUSH_HZ")
-    mavlink_udp_host: str = Field("0.0.0.0", alias="MAVLINK_UDP_HOST")
-    mavlink_udp_port: int = Field(14540, alias="MAVLINK_UDP_PORT")
-    mavlink_dialect: str = Field("ardupilotmega", alias="MAVLINK_DIALECT")
-    mavlink_robust_parsing: bool = Field(True, alias="MAVLINK_ROBUST_PARSING")
     ingest_debug_stats: bool = Field(True, alias="INGEST_DEBUG_STATS")
 
     model_config = SettingsConfigDict(env_file=".env")

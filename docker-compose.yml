@@ -39,6 +39,10 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: example
       LOG_LEVEL: INFO
+      DRONE_ID: drone_alpha
+      DRONE_LABEL: PX4_QUAD_X
+      MAVSDK_URL: udp://0.0.0.0:14540
+      PUBLISH_RATE_HZ: 5
       STALE_AFTER_SEC: 10
       OFFLINE_AFTER_SEC: 30
       INGEST_MAX_CONCURRENCY: 10

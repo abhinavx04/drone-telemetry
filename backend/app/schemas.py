@@ -83,6 +83,7 @@ class NormalizedTelemetry(BaseModel):
     drone_id: str
     source_timestamp: int
     ingest_timestamp: float
+    received_timestamp: float
     position: Optional[Position] = None
     battery_pct: Optional[float] = None
     flight_mode: Optional[str] = None
@@ -109,6 +110,7 @@ class TelemetryLatestOut(BaseModel):
     status: Literal["online", "stale", "offline"]
     last_seen_ts: Optional[int]
     source_timestamp: Optional[int]
+    received_timestamp: Optional[int]
     position: Optional[Position]
     battery: BatteryOut
     flight_mode: Optional[str]

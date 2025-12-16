@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
 from app.config import settings
 from app.schemas import DroneSummary, HealthResponse, TelemetryLatestOut
-from app.state import SERVICE_START_TIME, get_mqtt_snapshot, telemetry_cache
+from app.state import SERVICE_START_TIME, get_mavsdk_snapshot, get_mqtt_snapshot, telemetry_cache
 from app.mavlink_ingestor import get_ingestor_stats
 
 logger = logging.getLogger(__name__)
@@ -41,11 +41,26 @@ async def latest_telemetry(drone_id: str) -> TelemetryLatestOut:
     return snapshot
 
 
-@router.get("/debug/mavlink/stats", summary="Debug stats for MAVLink ingestor")
-async def mavlink_stats():
+@router.get("/debug/mavsdk/stats", summary="Debug stats for MAVSDK ingestor")
+async def mavsdk_stats():
     if not settings.ingest_debug_stats:
         raise HTTPException(status_code=404, detail="Stats disabled")
     return get_ingestor_stats()
+
+
+@router.get("/debug/mavlink/stats", include_in_schema=False)
+async def mavlink_stats_compat():
+    """
+    Backward compatibility for previous debug endpoint name.
+    """
+    if not settings.ingest_debug_stats:
+        raise HTTPException(status_code=404, detail="Stats disabled")
+    return get_ingestor_stats()
+
+
+@router.get("/debug/mavsdk/health", summary="Debug health for MAVSDK connection")
+async def mavsdk_health():
+    return get_mavsdk_snapshot()
 
 
 @router.websocket("/drones/{drone_id}/telemetry/stream")
