@@ -9,15 +9,19 @@ from app.schemas import TelemetryIn
 logger = logging.getLogger(__name__)
 
 async def create_telemetry(db: AsyncSession, telemetry: TelemetryIn) -> Telemetry:
-    """... (existing function remains unchanged) ..."""
     try:
-        if not isinstance(telemetry.timestamp, int):
-            logger.error(f"Invalid timestamp type: {type(telemetry.timestamp)}")
+        if telemetry.latitude is None or telemetry.longitude is None:
+            raise ValueError("Latitude and longitude are required for persistence")
+        if telemetry.timestamp is None or not isinstance(telemetry.timestamp, int):
             raise ValueError("Timestamp must be an integer Unix timestamp")
         
-        logger.debug(f"Creating telemetry record: drone_id={telemetry.drone_id}, timestamp={telemetry.timestamp}")
+        payload = telemetry.model_dump()
+        payload["is_online"] = telemetry.is_online if telemetry.is_online is not None else True
+        logger.debug(
+            "Creating telemetry record: drone_id=%s, timestamp=%s", telemetry.drone_id, telemetry.timestamp
+        )
         
-        db_obj = Telemetry(**telemetry.dict())
+        db_obj = Telemetry(**payload)
         db.add(db_obj)
         
         try:

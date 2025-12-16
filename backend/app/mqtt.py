@@ -1,54 +1,168 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
+import time
+from typing import Optional
+
 from asyncio_mqtt import Client, MqttError
+from pydantic import ValidationError
+
 from app.config import settings
-from app.schemas import TelemetryIn
 from app.crud import create_telemetry
 from app.db import AsyncSessionLocal
+from app.schemas import NormalizedTelemetry, Position, TelemetryDerived, TelemetryFlags, TelemetryIn
+from app.state import mqtt_state, telemetry_cache
 
 logger = logging.getLogger("mqtt")
 
-async def handle_mqtt_message(payload: bytes):
+_worker_semaphore = asyncio.Semaphore(settings.ingest_max_concurrency)
+_pending_tasks: set[asyncio.Task] = set()
+_MAX_BACKLOG = settings.ingest_backlog_max
+
+_FLIGHT_MODE_MAP = {
+    "MANUAL": "MANUAL",
+    "ALTCTL": "ALT_HOLD",
+    "ALT_HOLD": "ALT_HOLD",
+    "POSCTL": "POS_HOLD",
+    "POS_HOLD": "POS_HOLD",
+    "AUTO.MISSION": "MISSION",
+    "MISSION": "MISSION",
+    "AUTO.RTL": "RTL",
+    "RTL": "RTL",
+    "LAND": "LAND",
+    "OFFBOARD": "OFFBOARD",
+}
+
+
+def _normalize_flight_mode(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    normalized = _FLIGHT_MODE_MAP.get(raw.strip().upper())
+    return normalized or "UNKNOWN"
+
+
+def _normalize_payload(raw: TelemetryIn) -> NormalizedTelemetry:
+    now = time.time()
+    source_ts = int(raw.timestamp) if raw.timestamp is not None else int(now)
+
+    gps_lost = False
+    position = None
+    if raw.latitude is not None and raw.longitude is not None:
+        if -90 <= raw.latitude <= 90 and -180 <= raw.longitude <= 180:
+            position = Position(lat=raw.latitude, lon=raw.longitude, alt_m=raw.absolute_altitude_m)
+        else:
+            gps_lost = True
+    else:
+        gps_lost = True
+
+    battery_pct = None
+    if raw.battery_percentage is not None:
+        battery_pct = max(0.0, min(100.0, float(raw.battery_percentage)))
+
+    is_emergency = bool(raw.is_emergency) or (battery_pct is not None and battery_pct <= settings.emergency_battery_pct)
+    flags = TelemetryFlags(gps_lost=gps_lost, rc_lost=raw.rc_lost, is_emergency=is_emergency)
+    derived = TelemetryDerived(
+        ground_speed_mps=raw.ground_speed_mps,
+        climb_rate_mps=raw.climb_rate_mps,
+        heading_deg=raw.heading_deg,
+    )
+
+    return NormalizedTelemetry(
+        drone_id=raw.drone_id.strip(),
+        source_timestamp=source_ts,
+        ingest_timestamp=now,
+        position=position,
+        battery_pct=battery_pct,
+        flight_mode=_normalize_flight_mode(raw.flight_mode),
+        flags=flags,
+        derived=derived,
+    )
+
+
+async def _persist_if_possible(normalized: NormalizedTelemetry) -> None:
+    if normalized.position is None:
+        logger.debug("Skipping DB persist for %s because position is missing/invalid", normalized.drone_id)
+        return
+
+    db_payload = TelemetryIn(
+        drone_id=normalized.drone_id,
+        latitude=normalized.position.lat,
+        longitude=normalized.position.lon,
+        absolute_altitude_m=normalized.position.alt_m,
+        timestamp=normalized.source_timestamp,
+        battery_percentage=normalized.battery_pct,
+        flight_mode=normalized.flight_mode,
+        is_online=True,
+    )
+
+    try:
+        async with AsyncSessionLocal() as db:
+            await create_telemetry(db, db_payload)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to persist telemetry for %s: %s", normalized.drone_id, exc)
+
+
+async def handle_mqtt_message(payload: bytes) -> None:
     try:
         data = json.loads(payload)
-        logger.info(f"Received MQTT payload: {data}")
-        
-        # Log timestamp type before conversion
-        if 'timestamp' in data:
-            logger.info(f"Timestamp type before conversion: {type(data['timestamp'])}")
-        
-        telemetry = TelemetryIn(**data)
-        
-        # Log timestamp type after conversion
-        logger.info(f"Timestamp type after conversion: {type(telemetry.timestamp)}")
-        logger.info(f"Timestamp value: {telemetry.timestamp}")
-        
-        async with AsyncSessionLocal() as db:
-            await create_telemetry(db, telemetry)
-        logger.info(f"Successfully saved telemetry for drone {telemetry.drone_id}")
-    except ValueError as e:
-        logger.error(f"Validation error in MQTT message: {e} | Payload: {payload}")
-    except json.JSONDecodeError as e:
-        logger.error(f"Invalid JSON in MQTT message: {e} | Payload: {payload}")
-    except Exception as e:
-        logger.error(f"Failed to handle MQTT message: {e} | Payload: {payload}")
+    except json.JSONDecodeError as exc:
+        logger.error("Invalid JSON in MQTT message: %s | Payload: %s", exc, payload)
+        return
+
+    try:
+        raw = TelemetryIn.model_validate(data)
+    except ValidationError as exc:
+        logger.error("Validation error in MQTT message: %s | Payload: %s", exc, payload)
+        return
+
+    if not raw.drone_id or not raw.drone_id.strip():
+        logger.error("Received telemetry without drone_id. Dropping payload: %s", payload)
+        return
+
+    normalized = _normalize_payload(raw)
+    await telemetry_cache.update(normalized)
+    await _persist_if_possible(normalized)
+    logger.debug("Processed telemetry for %s", normalized.drone_id)
+
+
+async def _worker(payload: bytes) -> None:
+    async with _worker_semaphore:
+        await handle_mqtt_message(payload)
+
 
 async def mqtt_listener():
     while True:
         try:
-            logger.info(f"Attempting to connect to MQTT broker at {settings.mqtt_host}:{settings.mqtt_port}")
+            logger.info("Connecting to MQTT broker at %s:%s", settings.mqtt_host, settings.mqtt_port)
             async with Client(settings.mqtt_host, settings.mqtt_port) as client:
-                logger.info("Successfully connected to MQTT broker")
+                mqtt_state.update({"connected": True, "last_error": None})
                 async with client.unfiltered_messages() as messages:
                     await client.subscribe(settings.mqtt_topic)
-                    logger.info(f"MQTT subscribed to {settings.mqtt_topic}")
+                    logger.info("MQTT subscribed to %s", settings.mqtt_topic)
                     async for message in messages:
-                        logger.info(f"Received message on topic: {message.topic}")
-                        asyncio.create_task(handle_mqtt_message(message.payload))
-        except MqttError as e:
-            logger.error(f"MQTT connection error: {e}. Retrying in 5 seconds...")
-            await asyncio.sleep(5)
-        except Exception as e:
-            logger.error(f"Unknown MQTT error: {e}. Retrying in 5 seconds...")
-            await asyncio.sleep(5)
+                        mqtt_state["last_message_ts"] = time.time()
+                        if len(_pending_tasks) >= _MAX_BACKLOG:
+                            logger.warning(
+                                "Dropping telemetry message due to backlog size=%s (limit=%s)",
+                                len(_pending_tasks),
+                                _MAX_BACKLOG,
+                            )
+                            continue
+                        try:
+                            task = asyncio.create_task(_worker(message.payload))
+                            _pending_tasks.add(task)
+                            task.add_done_callback(_pending_tasks.discard)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.error("Failed to schedule MQTT handling: %s", exc)
+        except MqttError as exc:
+            mqtt_state.update({"connected": False, "last_error": str(exc)})
+            logger.error(
+                "MQTT connection error: %s. Retrying in %s seconds...", exc, settings.mqtt_reconnect_delay
+            )
+            await asyncio.sleep(settings.mqtt_reconnect_delay)
+        except Exception as exc:  # noqa: BLE001
+            mqtt_state.update({"connected": False, "last_error": str(exc)})
+            logger.error("Unknown MQTT error: %s. Retrying in %s seconds...", exc, settings.mqtt_reconnect_delay)
+            await asyncio.sleep(settings.mqtt_reconnect_delay)

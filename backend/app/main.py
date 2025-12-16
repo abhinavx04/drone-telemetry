@@ -1,16 +1,20 @@
 import asyncio
 import logging
-from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.responses import JSONResponse
+import time
+
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import router as api_router
+from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
+
+from app.api import router as api_router
 from app.config import settings
-from app.db import get_db, Base, engine
-from app.schemas import TelemetryOut, TelemetryIn
-from app.crud import get_recent_telemetry, create_telemetry
-from app.utils import setup_logging
+from app.crud import create_telemetry, get_recent_telemetry
+from app.db import Base, engine, get_db
 from app.mqtt import mqtt_listener
+from app.schemas import TelemetryIn, TelemetryOut
+from app.state import SERVICE_START_TIME, get_mqtt_snapshot
+from app.utils import setup_logging
 
 app = FastAPI(title="Drone Telemetry API", version="1.0.0")
 
@@ -50,7 +54,9 @@ async def shutdown_event():
 
 @app.get("/health", summary="Health check")
 async def health_check():
-    return {"status": "ok"}
+    mqtt = get_mqtt_snapshot()
+    status = "ok" if mqtt.get("connected") else "degraded"
+    return {"status": status, "mqtt": mqtt, "uptime_s": int(time.time() - SERVICE_START_TIME)}
 
 @app.get("/")
 def read_root():
@@ -61,6 +67,9 @@ async def post_telemetry(telemetry: TelemetryIn, db=Depends(get_db)):
     try:
         obj = await create_telemetry(db, telemetry)
         return obj
+    except ValueError as exc:
+        logging.error("Bad telemetry payload: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc))
     except SQLAlchemyError as e:
         logging.error(f"DB error: {e}")
         raise HTTPException(status_code=500, detail="Database error")

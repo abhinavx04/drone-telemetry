@@ -39,6 +39,12 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: example
       LOG_LEVEL: INFO
+      STALE_AFTER_SEC: 10
+      OFFLINE_AFTER_SEC: 30
+      INGEST_MAX_CONCURRENCY: 10
+      INGEST_BACKLOG_MAX: 100
+      EMERGENCY_BATTERY_PCT: 5
+      WS_PUSH_HZ: 5
     ports:
       - "8000:8000"
     restart: unless-stopped

@@ -10,4 +10,4 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 RUN chmod +x wait-for-it.sh
 
 # Use wait-for-it.sh to wait for the database before starting the app
-CMD ["./wait-for-it.sh", "timescaledb:5432", "--", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["./wait-for-it.sh", "db:5432", "--", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
