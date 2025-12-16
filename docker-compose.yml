@@ -47,6 +47,7 @@ services:
       WS_PUSH_HZ: 5
     ports:
       - "8000:8000"
+      - "14540:14540/udp"  # MAVLink UDP port for MAVSDK connection
     restart: unless-stopped
 
   # Simulator Service: Now starts first
