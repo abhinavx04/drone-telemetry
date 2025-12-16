@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from app.config import settings
 from app.schemas import DroneSummary, HealthResponse, TelemetryLatestOut
 from app.state import SERVICE_START_TIME, get_mqtt_snapshot, telemetry_cache
+from app.mavlink_ingestor import get_ingestor_stats
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -38,6 +39,13 @@ async def latest_telemetry(drone_id: str) -> TelemetryLatestOut:
     if snapshot.status == "offline":
         raise HTTPException(status_code=410, detail="Drone offline")
     return snapshot
+
+
+@router.get("/debug/mavlink/stats", summary="Debug stats for MAVLink ingestor")
+async def mavlink_stats():
+    if not settings.ingest_debug_stats:
+        raise HTTPException(status_code=404, detail="Stats disabled")
+    return get_ingestor_stats()
 
 
 @router.websocket("/drones/{drone_id}/telemetry/stream")

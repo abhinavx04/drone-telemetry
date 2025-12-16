@@ -12,6 +12,7 @@ from app.config import settings
 from app.crud import create_telemetry, get_recent_telemetry
 from app.db import Base, engine, get_db
 from app.mqtt import mqtt_listener
+from app.mavlink_ingestor import start_ingestor, stop_ingestor
 from app.schemas import TelemetryIn, TelemetryOut
 from app.state import SERVICE_START_TIME, get_mqtt_snapshot
 from app.utils import setup_logging
@@ -39,6 +40,9 @@ async def startup_event():
         await conn.run_sync(Base.metadata.create_all)
     # Start MQTT listener in background
     app.state.mqtt_task = asyncio.create_task(mqtt_listener())
+    # Start MAVLink UDP ingestor in a daemon thread; uses the server loop for callbacks.
+    loop = asyncio.get_running_loop()
+    start_ingestor(loop)
     logging.getLogger("main").info("Service started")
 
 @app.on_event("shutdown")
@@ -49,6 +53,7 @@ async def shutdown_event():
             await app.state.mqtt_task
         except asyncio.CancelledError:
             pass
+    stop_ingestor()
     await engine.dispose()
     logging.getLogger("main").info("Service shutdown")
 

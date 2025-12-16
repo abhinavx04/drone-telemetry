@@ -31,6 +31,7 @@ class TelemetryIn(BaseModel):
     ground_speed_mps: Optional[float] = None
     climb_rate_mps: Optional[float] = None
     heading_deg: Optional[float] = None
+    ingest_source: Optional[str] = None
 
     @field_validator("timestamp")
     @classmethod

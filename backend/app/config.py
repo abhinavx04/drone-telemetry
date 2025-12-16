@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     ingest_backlog_max: int = Field(100, alias="INGEST_BACKLOG_MAX")
     emergency_battery_pct: float = Field(5.0, alias="EMERGENCY_BATTERY_PCT")
     ws_push_hz: float = Field(5.0, alias="WS_PUSH_HZ")
+    mavlink_udp_host: str = Field("0.0.0.0", alias="MAVLINK_UDP_HOST")
+    mavlink_udp_port: int = Field(14540, alias="MAVLINK_UDP_PORT")
+    mavlink_dialect: str = Field("ardupilotmega", alias="MAVLINK_DIALECT")
+    mavlink_robust_parsing: bool = Field(True, alias="MAVLINK_ROBUST_PARSING")
+    ingest_debug_stats: bool = Field(True, alias="INGEST_DEBUG_STATS")
 
     model_config = SettingsConfigDict(env_file=".env")
 

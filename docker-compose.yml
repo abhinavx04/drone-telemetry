@@ -57,6 +57,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
+    profiles: ["sim"]  # only for local testing; keep disabled in production
     # No dependency needed, it should start independently
 
   # MAVSDK Drone Script: Now depends on the simulator
@@ -72,6 +73,7 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
+    profiles: ["sim"]  # ensure it does not bind 14540 in production
 
 # Define the volume for PostgreSQL data persistence
 volumes:
