@@ -6,4 +6,4 @@ pydantic
 pydantic-settings>=2.0.0
 asyncio-mqtt==0.14.0
 paho-mqtt==1.6.1
-mavsdk==2.5.0
+pymavlink==2.4.41

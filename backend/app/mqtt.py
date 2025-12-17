@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import threading
 import time
 from typing import Optional
@@ -40,6 +41,19 @@ _FLIGHT_MODE_MAP = {
     "LAND": "LAND",
     "OFFBOARD": "OFFBOARD",
 }
+
+
+def sanitize_json_value(v):
+    """Recursively sanitize NaN/Inf to None for JSON safety."""
+    if isinstance(v, float):
+        if math.isnan(v) or math.isinf(v):
+            return None
+        return v
+    if isinstance(v, dict):
+        return {k: sanitize_json_value(val) for k, val in v.items()}
+    if isinstance(v, list):
+        return [sanitize_json_value(item) for item in v]
+    return v
 
 
 def _normalize_flight_mode(raw: Optional[str]) -> Optional[str]:
@@ -87,6 +101,7 @@ def _normalize_payload(raw: TelemetryIn) -> NormalizedTelemetry:
         derived=derived,
     )
 
+
 def normalized_to_payload(normalized: NormalizedTelemetry, include_ingest_source: bool = False) -> dict:
     payload = {
         "drone_id": normalized.drone_id,
@@ -125,6 +140,20 @@ def _ensure_publish_client() -> Optional[paho_mqtt.Client]:
         return None
 
 
+def _publish_json(topic: str, payload: object) -> None:
+    cleaned = sanitize_json_value(payload)
+    with _publish_lock:
+        client = _ensure_publish_client()
+        if client is None:
+            return
+        try:
+            client.publish(topic, json.dumps(cleaned), qos=0, retain=False)
+            mqtt_state["last_message_ts"] = time.time()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("MQTT publish failed for %s: %s", topic, exc)
+            mqtt_state["last_error"] = str(exc)
+
+
 def publish_normalized(normalized: NormalizedTelemetry, payload: Optional[dict] = None) -> None:
     """
     Synchronous publish for the ingestion thread. Avoids feedback loops by tagging ingest_source.
@@ -132,16 +161,33 @@ def publish_normalized(normalized: NormalizedTelemetry, payload: Optional[dict] 
     if payload is None:
         payload = normalized_to_payload(normalized, include_ingest_source=True)
     topic = f"drone/{normalized.drone_id}/telemetry"
-    with _publish_lock:
-        client = _ensure_publish_client()
-        if client is None:
-            return
+    _publish_json(topic, payload)
+
+
+async def publish_fleet_summary(stop_event: asyncio.Event) -> None:
+    """Publish low-rate fleet summary for dashboards."""
+    interval = 1.0 / settings.summary_rate_hz if settings.summary_rate_hz > 0 else 1.0
+    while not stop_event.is_set():
         try:
-            client.publish(topic, json.dumps(payload), qos=0, retain=False)
-            mqtt_state["last_message_ts"] = time.time()
+            summaries = await telemetry_cache.list_summaries()
+            payload = [
+                {
+                    "drone_id": s.id,
+                    "status": s.status,
+                    "battery_pct": s.battery_pct,
+                    "flight_mode": s.flight_mode,
+                    "last_seen_ts": s.last_seen_ts,
+                }
+                for s in summaries
+            ]
+            await asyncio.to_thread(_publish_json, "drone/all/summary", payload)
         except Exception as exc:  # noqa: BLE001
-            logger.error("MQTT publish failed for %s: %s", topic, exc)
-            mqtt_state["last_error"] = str(exc)
+            logger.error("Fleet summary publish failed: %s", exc)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            continue
+
 
 async def _persist_if_possible(normalized: NormalizedTelemetry) -> None:
     if normalized.position is None:
@@ -212,6 +258,10 @@ async def _worker(payload: bytes) -> None:
 
 
 async def mqtt_listener():
+    if not settings.ingest_enable_mqtt_listener:
+        logger.info("MQTT listener disabled by config (INGEST_ENABLE_MQTT_LISTENER=false)")
+        return
+
     while True:
         try:
             logger.info("Connecting to MQTT broker at %s:%s", settings.mqtt_host, settings.mqtt_port)

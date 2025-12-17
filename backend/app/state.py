@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import Dict, Optional
 
 from app.config import settings
@@ -28,18 +29,161 @@ mqtt_state: Dict[str, Optional[object]] = {
     "last_error": None,
 }
 
-# Updated by the MAVSDK ingestor for health and debug reporting.
-mavsdk_state: Dict[str, Optional[object]] = {
-    "connected": False,
-    "status": "disconnected",
-    "last_message_ts": None,
-    "last_connect_ts": None,
-    "last_error": None,
-    "messages": 0,
-    "published": 0,
-    "drone_id": settings.drone_id,
-    "drone_label": settings.drone_label,
-}
+
+@dataclass
+class DroneContext:
+    drone_id: str
+    source_ip: str
+    source_port: int
+    last_seen_ts: float
+    status: str
+    telemetry: Optional[NormalizedTelemetry] = None
+    ingest_stats: Dict[str, float | int] = field(
+        default_factory=lambda: {
+            "packets_received": 0,
+            "packets_dropped": 0,
+            "last_packet_ts": None,
+        }
+    )
+
+
+class DroneContextStore:
+    """
+    Thread-safe per-drone contexts for UDP ingestion. The UDP listener thread
+    calls into these async methods via asyncio.run_coroutine_threadsafe.
+    """
+
+    def __init__(self, stale_after_s: int, offline_after_s: int) -> None:
+        self.stale_after_s = stale_after_s
+        self.offline_after_s = offline_after_s
+        self._data: Dict[str, DroneContext] = {}
+        self._lock = asyncio.Lock()
+        self._stop = asyncio.Event()
+        self._gc_task: Optional[asyncio.Task] = None
+        self.gc_evictions = 0
+
+    def _status(self, now: float, last_seen_ts: Optional[float]) -> str:
+        if last_seen_ts is None:
+            return "offline"
+        age = now - last_seen_ts
+        if age <= self.stale_after_s:
+            return "online"
+        if age <= self.offline_after_s:
+            return "stale"
+        return "offline"
+
+    async def upsert(
+        self,
+        drone_id: str,
+        source_ip: str,
+        source_port: int,
+        telemetry: NormalizedTelemetry,
+        dropped: int = 0,
+    ) -> None:
+        now = time.time()
+        async with self._lock:
+            ctx = self._data.get(
+                drone_id,
+                DroneContext(
+                    drone_id=drone_id,
+                    source_ip=source_ip,
+                    source_port=source_port,
+                    last_seen_ts=now,
+                    status="offline",
+                ),
+            )
+            ctx.source_ip = source_ip
+            ctx.source_port = source_port
+            ctx.telemetry = telemetry
+            ctx.last_seen_ts = telemetry.received_timestamp or telemetry.ingest_timestamp
+            ctx.ingest_stats["packets_received"] = int(ctx.ingest_stats.get("packets_received", 0)) + 1
+            ctx.ingest_stats["packets_dropped"] = int(ctx.ingest_stats.get("packets_dropped", 0)) + int(dropped)
+            ctx.ingest_stats["last_packet_ts"] = ctx.last_seen_ts
+            ctx.status = self._status(now, ctx.last_seen_ts)
+            self._data[drone_id] = ctx
+
+    async def drop_only(self, drone_id: str, dropped: int = 1) -> None:
+        """Record a dropped packet for an existing context."""
+        async with self._lock:
+            ctx = self._data.get(drone_id)
+            if not ctx:
+                return
+            ctx.ingest_stats["packets_dropped"] = int(ctx.ingest_stats.get("packets_dropped", 0)) + int(dropped)
+
+    async def snapshot(self, drone_id: Optional[str] = None) -> dict:
+        now = time.time()
+        async with self._lock:
+            if drone_id:
+                ctx = self._data.get(drone_id)
+                if not ctx:
+                    return {"status": "unknown"}
+                age = now - float(ctx.last_seen_ts)
+                return {
+                    "drone_id": ctx.drone_id,
+                    "status": self._status(now, ctx.last_seen_ts),
+                    "last_seen_ts": ctx.last_seen_ts,
+                    "source_ip": ctx.source_ip,
+                    "source_port": ctx.source_port,
+                    "telemetry_version": getattr(ctx.telemetry, "version", None),
+                    "ingest_stats": dict(ctx.ingest_stats),
+                    "age_s": age,
+                }
+
+            total_packets = sum(int(c.ingest_stats.get("packets_received", 0)) for c in self._data.values())
+            total_dropped = sum(int(c.ingest_stats.get("packets_dropped", 0)) for c in self._data.values())
+            return {
+                "active_drones": len(self._data),
+                "total_packets_received": total_packets,
+                "total_packets_dropped": total_dropped,
+                "gc_evictions": self.gc_evictions,
+                "drones": {
+                    did: {
+                        "status": self._status(now, ctx.last_seen_ts),
+                        "last_seen_ts": ctx.last_seen_ts,
+                        "source_ip": ctx.source_ip,
+                        "source_port": ctx.source_port,
+                        "ingest_stats": dict(ctx.ingest_stats),
+                    }
+                    for did, ctx in self._data.items()
+                },
+            }
+
+    async def start_gc(self) -> None:
+        if self._gc_task and not self._gc_task.done():
+            return
+        self._stop.clear()
+        self._gc_task = asyncio.create_task(self._gc_offline_drones(), name="drone-context-gc")
+
+    async def stop_gc(self) -> None:
+        self._stop.set()
+        if self._gc_task:
+            self._gc_task.cancel()
+            try:
+                await self._gc_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _gc_offline_drones(self) -> None:
+        while not self._stop.is_set():
+            await asyncio.sleep(settings.gc_interval_sec)
+            now = time.time()
+            to_delete: list[str] = []
+            async with self._lock:
+                for drone_id, ctx in self._data.items():
+                    age = now - ctx.last_seen_ts
+                    status = self._status(now, ctx.last_seen_ts)
+                    if status == "offline" and age > settings.gc_offline_after_sec:
+                        to_delete.append(drone_id)
+                for drone_id in to_delete:
+                    ctx = self._data.get(drone_id)
+                    last_age = now - ctx.last_seen_ts if ctx else None
+                    logger.info(
+                        "GC: Removing offline drone %s (offline for %s seconds)",
+                        drone_id,
+                        int(last_age) if last_age is not None else "unknown",
+                    )
+                    self._data.pop(drone_id, None)
+                    self.gc_evictions += 1
 
 
 class TelemetryCache:
@@ -157,6 +301,12 @@ telemetry_cache = TelemetryCache(
     max_drones=settings.max_drones,
 )
 
+# Authoritative UDP ingestion contexts.
+drone_contexts = DroneContextStore(
+    stale_after_s=settings.stale_after_sec,
+    offline_after_s=settings.offline_after_sec,
+)
+
 
 def get_mqtt_snapshot() -> dict:
     """
@@ -175,34 +325,9 @@ def get_mqtt_snapshot() -> dict:
     }
 
 
-def get_mavsdk_snapshot() -> dict:
+async def get_mavlink_snapshot(drone_id: Optional[str] = None) -> dict:
     """
-    Returns a copy of the MAVSDK connectivity state with computed lag.
+    Returns per-drone or aggregate MAVLink ingestion state.
     """
-    last_ts = mavsdk_state.get("last_message_ts")
-    now = time.time()
-    lag_ms = None
-    if last_ts:
-        lag_ms = int((now - float(last_ts)) * 1000)
-    status = mavsdk_state.get("status") or "disconnected"
-    if last_ts:
-        age = now - float(last_ts)
-        if age > settings.mavsdk_disconnected_after_s:
-            status = "disconnected"
-        elif age > settings.mavsdk_degraded_after_s:
-            status = "degraded"
-        else:
-            status = "connected"
-    return {
-        "connected": mavsdk_state.get("connected", False),
-        "status": status,
-        "last_message_ts": last_ts,
-        "lag_ms": lag_ms,
-        "last_connect_ts": mavsdk_state.get("last_connect_ts"),
-        "last_error": mavsdk_state.get("last_error"),
-        "messages": mavsdk_state.get("messages"),
-        "published": mavsdk_state.get("published"),
-        "drone_id": mavsdk_state.get("drone_id"),
-        "drone_label": mavsdk_state.get("drone_label"),
-    }
+    return await drone_contexts.snapshot(drone_id)
 
