@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import socket
+import select
 import threading
 import time
 from typing import Dict, List, Optional
@@ -49,7 +50,7 @@ class MavlinkIngestor:
 
     def __init__(self) -> None:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._sock: Optional[socket.socket] = None
+        self._sockets: Dict[int, socket.socket] = {}
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._publish_interval = 1.0 / settings.publish_rate_hz if settings.publish_rate_hz > 0 else 0
@@ -67,17 +68,18 @@ class MavlinkIngestor:
         self._thread = threading.Thread(target=self._run, name="udp-mavlink-listener", daemon=True)
         self._thread.start()
         logger.info(
-            "[boot] UDP_BIND=%s:%s PUBLISH_RATE_HZ=%s",
+            "[boot] UDP_BIND=%s:%s-%s PUBLISH_RATE_HZ=%s",
             settings.udp_bind_host,
-            settings.udp_bind_port,
+            settings.udp_bind_start_port,
+            settings.udp_bind_end_port,
             settings.publish_rate_hz,
         )
 
     async def stop(self) -> None:
         self._stop.set()
-        if self._sock:
+        for sock in self._sockets.values():
             try:
-                self._sock.close()
+                sock.close()
             except Exception:  # noqa: BLE001
                 pass
         if self._thread:
@@ -85,34 +87,54 @@ class MavlinkIngestor:
         await drone_contexts.stop_gc()
 
     def _run(self) -> None:
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, settings.udp_recv_buffer_bytes)
-        self._sock.bind((settings.udp_bind_host, settings.udp_bind_port))
-        logger.info("UDP listener bound to %s:%s", settings.udp_bind_host, settings.udp_bind_port)
+        start_port = settings.udp_bind_start_port
+        end_port = settings.udp_bind_end_port
+        if end_port < start_port:
+            raise ValueError("UDP_BIND_END_PORT must be >= UDP_BIND_START_PORT")
 
+        for port in range(start_port, end_port + 1):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, settings.udp_recv_buffer_bytes)
+            sock.bind((settings.udp_bind_host, port))
+            self._sockets[port] = sock
+        logger.info(
+            "UDP listeners bound to %s:%s-%s (%s ports)",
+            settings.udp_bind_host,
+            start_port,
+            end_port,
+            len(self._sockets),
+        )
+
+        sockets_list = list(self._sockets.values())
         while not self._stop.is_set():
-            try:
-                data, addr = self._sock.recvfrom(8192)
-            except socket.error as exc:  # noqa: BLE001
-                logger.error("Socket error in UDP listener: %s", exc)
-                time.sleep(1)
+            if not sockets_list:
+                time.sleep(0.1)
                 continue
 
-            source_ip, source_port = addr
-            drone_id = f"{source_ip}:{source_port}"
-            try:
-                messages = self._parse_messages(data)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("Dropped malformed MAVLink frame from %s: %s", drone_id, exc)
-                self._record_drop(drone_id)
-                continue
-
-            for msg in messages:
+            ready, _, _ = select.select(sockets_list, [], [], 1.0)
+            for sock in ready:
                 try:
-                    self._handle_message(msg, drone_id, source_ip, source_port)
+                    data, addr = sock.recvfrom(8192)
+                except socket.error as exc:  # noqa: BLE001
+                    logger.error("Socket error in UDP listener: %s", exc)
+                    continue
+
+                dest_port = sock.getsockname()[1]
+                source_ip, _source_port = addr
+                drone_id = f"udp:{dest_port}"
+                try:
+                    messages = self._parse_messages(data)
                 except Exception as exc:  # noqa: BLE001
-                    logger.error("Failed processing MAVLink msg from %s: %s", drone_id, exc, exc_info=True)
+                    logger.debug("Dropped malformed MAVLink frame for %s: %s", drone_id, exc)
+                    self._record_drop(drone_id)
+                    continue
+
+                for msg in messages:
+                    try:
+                        self._handle_message(msg, drone_id, source_ip, dest_port)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error("Failed processing MAVLink msg for %s: %s", drone_id, exc, exc_info=True)
 
     def _parse_messages(self, data: bytes) -> List[object]:
         messages: List[object] = []
@@ -122,7 +144,7 @@ class MavlinkIngestor:
                 messages.append(msg)
         return messages
 
-    def _handle_message(self, msg: object, drone_id: str, source_ip: str, source_port: int) -> None:
+    def _handle_message(self, msg: object, drone_id: str, source_ip: str, dest_port: int) -> None:
         msg_type = msg.get_type()
         if msg_type not in {
             "GLOBAL_POSITION_INT",
@@ -213,9 +235,11 @@ class MavlinkIngestor:
             normalized = self._build_normalized(drone_id, latest, now)
             if normalized:
                 self._last_publish_ts[drone_id] = now
-                self._dispatch(drone_id, source_ip, source_port, normalized)
+                self._dispatch(drone_id, source_ip, dest_port, normalized)
 
-    def _build_normalized(self, drone_id: str, latest: Dict[str, object], now: float) -> Optional[NormalizedTelemetry]:
+    def _build_normalized(
+        self, drone_id: str, latest: Dict[str, object], now: float
+    ) -> Optional[NormalizedTelemetry]:
         position_obj = None
         gps_lost = True
 
@@ -251,14 +275,14 @@ class MavlinkIngestor:
             derived=derived,
         )
 
-    def _dispatch(self, drone_id: str, source_ip: str, source_port: int, normalized: NormalizedTelemetry) -> None:
+    def _dispatch(self, drone_id: str, source_ip: str, dest_port: int, normalized: NormalizedTelemetry) -> None:
         if not self._loop:
             return
 
         async_calls = [
             (telemetry_cache.update(normalized), 1.0),
             (persist_normalized(normalized), 2.0),
-            (drone_contexts.upsert(drone_id, source_ip, source_port, normalized), 1.0),
+            (drone_contexts.upsert(drone_id, source_ip, dest_port, normalized), 1.0),
         ]
 
         for coro, timeout_s in async_calls:

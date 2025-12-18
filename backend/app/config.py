@@ -10,7 +10,8 @@ class Settings(BaseSettings):
     summary_rate_hz: float = Field(1.0, alias="SUMMARY_RATE_HZ")
     ingest_rate_hz: float = Field(0.0, alias="INGEST_RATE_HZ")  # 0 = unlimited
     udp_bind_host: str = Field("0.0.0.0", alias="UDP_BIND_HOST")
-    udp_bind_port: int = Field(14540, alias="UDP_BIND_PORT")
+    udp_bind_start_port: int = Field(14540, alias="UDP_BIND_START_PORT")
+    udp_bind_end_port: int = Field(14639, alias="UDP_BIND_END_PORT")
     udp_recv_buffer_bytes: int = Field(8 * 1024 * 1024, alias="UDP_RECV_BUFFER_BYTES")
     ingest_enable_mqtt_listener: bool = Field(False, alias="INGEST_ENABLE_MQTT_LISTENER")
     ingest_enable_http_post: bool = Field(False, alias="INGEST_ENABLE_HTTP_POST")
