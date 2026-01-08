@@ -72,7 +72,7 @@ class FlightTracker:
         self, drone_id: str, is_armed: bool, udp_port: Optional[int], sysid: Optional[int] = None
     ) -> None:
         """
-        Entry point for the UDP ingestion thread. Debounces arm/disarm and starts/stops flights.
+        Entry point for the UDP ingestion thread. Uses smart debounce to handle rapid toggles.
         """
         now = time.time()
         if not drone_id.startswith("udp:"):
@@ -87,7 +87,7 @@ class FlightTracker:
             has_active_flight = drone_id in self._active
 
             logger.info(
-                "Heartbeat for %s: is_armed=%s last_state=%s has_active_flight=%s last_change_ago=%.2fs",
+                "Heartbeat for %s: is_armed=%s last_state=%s has_active_flight=%s last_change_ago=%.3fs",
                 drone_id,
                 is_armed,
                 last_state,
@@ -127,17 +127,43 @@ class FlightTracker:
             # Already handled above
             return
 
-        # Debounce logic with smarter handling for DISARM
-        if now - last_change < 2.0:
-            # Allow DISARM to bypass debounce if flight is open (critical to close flights quickly)
-            if is_armed or not has_active_flight:
-                logger.debug("Debounced arm state change for %s (%.2fs)", drone_id, now - last_change)
-                return
-            # DISARM with open flight - allow it through with shorter debounce
-            if now - last_change < 0.5:  # 500ms debounce for DISARM
-                logger.debug("Debounced DISARM for %s (%.2fs)", drone_id, now - last_change)
-                return
+        # Smart debounce logic - different times for different scenarios
+        if last_state is not None and last_state != is_armed:
+            # State change detected - apply smart debounce
+            time_since_change = now - last_change
 
+            # Very short debounce for DISARM when flight is open (critical - must close quickly)
+            if not is_armed and has_active_flight:
+                if time_since_change < 0.3:  # 300ms
+                    logger.debug("Short debounce DISARM for %s (%.3fs) - flight open, waiting for stability", drone_id, time_since_change)
+                    # Update state change time but don't process yet
+                    async with self._lock:
+                        self._state_change_at[drone_id] = now
+                    return
+                else:
+                    logger.info("DISARM confirmed for %s after %.3fs debounce (flight was open)", drone_id, time_since_change)
+            # Shorter debounce for ARM (less critical, but still want fast response)
+            elif is_armed:
+                if time_since_change < 1.0:  # 1 second for ARM
+                    logger.debug("Debounced ARM for %s (%.3fs) - waiting for stability", drone_id, time_since_change)
+                    # Update state change time but don't process yet
+                    async with self._lock:
+                        self._state_change_at[drone_id] = now
+                    return
+                else:
+                    logger.info("ARM confirmed for %s after %.3fs debounce", drone_id, time_since_change)
+            # Longer debounce for DISARM when no flight (safe to wait)
+            else:
+                if time_since_change < 2.0:  # 2 seconds for DISARM with no flight
+                    logger.debug("Debounced DISARM for %s (%.3fs) - no active flight", drone_id, time_since_change)
+                    # Update state change time but don't process yet
+                    async with self._lock:
+                        self._state_change_at[drone_id] = now
+                    return
+                else:
+                    logger.info("DISARM confirmed for %s after %.3fs debounce (no active flight)", drone_id, time_since_change)
+
+        # Debounce passed or first detection - update state and process
         async with self._lock:
             self._armed_state[drone_id] = is_armed
             self._state_change_at[drone_id] = now
