@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Mosquitto MQTT Broker: No changes needed here.
   mosquitto:
@@ -45,6 +43,11 @@ services:
       INGEST_BACKLOG_MAX: 100
       EMERGENCY_BATTERY_PCT: 5
       WS_PUSH_HZ: 5
+      FLIGHT_AUTO_CLOSE_AFTER_SEC: 86400
+      FLIGHT_CLEANUP_INTERVAL_SEC: 3600
+      ULOG_STORAGE_DIR: /app/data/ulogs
+    volumes:
+      - ./data/ulogs:/app/data/ulogs
     ports:
       - "8000:8000"
       - "14540-14639:14540-14639/udp"  # MAVLink UDP ports for multi-drone ingest
