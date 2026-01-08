@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from app.config import settings
 from app.crud import create_telemetry
 from app.db import AsyncSessionLocal
+from app.flight_tracker import get_tracker
 from app.schemas import NormalizedTelemetry, Position, TelemetryDerived, TelemetryFlags, TelemetryIn
 from app.state import mqtt_state, telemetry_cache
 
@@ -249,6 +250,12 @@ async def handle_mqtt_message(payload: bytes) -> None:
     normalized = _normalize_payload(raw)
     await telemetry_cache.update(normalized)
     await _persist_if_possible(normalized)
+    tracker = get_tracker()
+    if tracker:
+        try:
+            await tracker.handle_normalized(normalized)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Flight tracker handling failed for %s: %s", normalized.drone_id, exc)
     logger.debug("Processed telemetry for %s", normalized.drone_id)
 
 

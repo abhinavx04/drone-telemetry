@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     ingest_debug_stats: bool = Field(True, alias="INGEST_DEBUG_STATS")
     gc_interval_sec: int = Field(300, alias="GC_INTERVAL_SEC")
     gc_offline_after_sec: int = Field(3600, alias="GC_OFFLINE_AFTER_SEC")
+    flight_auto_close_after_sec: int = Field(24 * 3600, alias="FLIGHT_AUTO_CLOSE_AFTER_SEC")
+    flight_cleanup_interval_sec: int = Field(3600, alias="FLIGHT_CLEANUP_INTERVAL_SEC")
+    ulog_storage_dir: str = Field("data/ulogs", alias="ULOG_STORAGE_DIR")
 
     model_config = SettingsConfigDict(env_file=".env")
 

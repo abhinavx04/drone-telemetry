@@ -9,6 +9,8 @@ from fastapi.responses import JSONResponse
 from app.api import router as api_router
 from app.config import settings
 from app.db import Base, engine
+from app.flight_tracker import get_tracker, start_tracker
+from app.migrations import run_migrations
 from app.mqtt import mqtt_listener, publish_fleet_summary
 from app.mavlink_ingestor import start_ingestor, stop_ingestor
 from app.state import SERVICE_START_TIME, get_mqtt_snapshot
@@ -34,8 +36,12 @@ setup_logging(settings.log_level)
 @app.on_event("startup")
 async def startup_event():
     # Create tables if not exists
+    await run_migrations(engine)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Flight tracker recovery must complete before ingestion starts
+    app.state.flight_tracker = await start_tracker()
 
     # Optional MQTT listener (ingestion disabled by default)
     if settings.ingest_enable_mqtt_listener:
@@ -51,6 +57,13 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    tracker = get_tracker()
+    if tracker:
+        try:
+            await tracker.stop()
+        except Exception:
+            logging.getLogger("main").warning("Flight tracker shutdown encountered an error", exc_info=True)
+
     if hasattr(app.state, "mqtt_task"):
         app.state.mqtt_task.cancel()
         try:

@@ -103,6 +103,9 @@ class DroneSummary(BaseModel):
     battery_pct: Optional[float]
     flight_mode: Optional[str]
     position: Optional[Position]
+    udp_port: Optional[int] = None
+    total_flights: Optional[int] = None
+    real_drone_id: Optional[str] = None
 
 
 class TelemetryLatestOut(BaseModel):
@@ -128,3 +131,52 @@ class HealthResponse(BaseModel):
 class TelemetryOut(TelemetryIn):
     """Kept for compatibility with the historic DB-backed endpoints."""
     pass
+
+
+class FlightSummary(BaseModel):
+    flight_id: str
+    drone_id: str
+    flight_count: int
+    start_timestamp: int
+    end_timestamp: Optional[int]
+    duration_seconds: Optional[int]
+    max_altitude_m: Optional[float] = None
+    max_speed_mps: Optional[float] = None
+    battery_start_pct: Optional[float] = None
+    battery_end_pct: Optional[float] = None
+    gps_issues_count: int = 0
+    emergency_events_count: int = 0
+    summary_data: Optional[dict] = None
+
+
+class FlightTelemetryPoint(BaseModel):
+    timestamp: int
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    altitude_m: Optional[float] = None
+    battery_pct: Optional[float] = None
+    flight_mode: Optional[str] = None
+    ground_speed_mps: Optional[float] = None
+    climb_rate_mps: Optional[float] = None
+    heading_deg: Optional[float] = None
+    gps_lost: Optional[bool] = None
+    is_emergency: Optional[bool] = None
+    ingest_timestamp: Optional[float] = None
+
+
+class FlightTelemetryPage(BaseModel):
+    flight_id: str
+    points: list[FlightTelemetryPoint]
+    total: int
+    limit: int
+    offset: int
+
+
+class ULogFileOut(BaseModel):
+    id: str
+    flight_id: Optional[str] = None
+    drone_id: str
+    original_filename: str
+    size_bytes: int
+    uploaded_at: int
+    content_type: Optional[str] = None

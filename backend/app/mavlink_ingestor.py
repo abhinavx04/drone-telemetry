@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 from pymavlink.dialects.v20 import ardupilotmega as mavlink2
 
 from app.config import settings
+from app.flight_tracker import get_tracker
 from app.mqtt import normalized_to_payload, persist_normalized, publish_normalized, sanitize_json_value
 from app.schemas import NormalizedTelemetry, Position, TelemetryDerived, TelemetryFlags
 from app.state import drone_contexts, telemetry_cache
@@ -224,6 +225,13 @@ class MavlinkIngestor:
 
         elif msg_type == "HEARTBEAT":
             latest["flight_mode"] = _decode_px4_flight_mode(getattr(msg, "custom_mode", 0))
+            base_mode = getattr(msg, "base_mode", 0)
+            is_armed = bool(base_mode & 0x80)
+            try:
+                sysid = msg.get_srcSystem()
+            except Exception:
+                sysid = None
+            self._submit_heartbeat(drone_id, is_armed, dest_port, sysid)
 
         if source_ts:
             latest["source_timestamp"] = source_ts
@@ -285,6 +293,17 @@ class MavlinkIngestor:
             (drone_contexts.upsert(drone_id, source_ip, dest_port, normalized), 1.0),
         ]
 
+        tracker = get_tracker()
+        if tracker and self._loop:
+            future = asyncio.run_coroutine_threadsafe(
+                tracker.handle_normalized(normalized, dest_port), self._loop
+            )
+            future.add_done_callback(
+                lambda fut: logger.error("Flight tracker telemetry failed: %s", fut.exception())
+                if fut.exception()
+                else None
+            )
+
         for coro, timeout_s in async_calls:
             future = asyncio.run_coroutine_threadsafe(coro, self._loop)
             try:
@@ -307,6 +326,20 @@ class MavlinkIngestor:
             future.result(timeout=1.0)
         except Exception:
             pass
+
+    def _submit_heartbeat(self, drone_id: str, is_armed: bool, dest_port: int, sysid: Optional[int]) -> None:
+        tracker = get_tracker()
+        if not tracker or not self._loop:
+            return
+        future = asyncio.run_coroutine_threadsafe(
+            tracker.handle_heartbeat(drone_id, is_armed=is_armed, udp_port=dest_port, sysid=sysid),
+            self._loop,
+        )
+        future.add_done_callback(
+            lambda fut: logger.error("Flight tracker heartbeat bridge failed for %s: %s", drone_id, fut.exception())
+            if fut.exception()
+            else None
+        )
 
     def get_stats(self) -> Dict[str, object]:
         if not settings.ingest_debug_stats:
