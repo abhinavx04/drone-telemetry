@@ -328,8 +328,13 @@ class MavlinkIngestor:
             pass
 
     def _submit_heartbeat(self, drone_id: str, is_armed: bool, dest_port: int, sysid: Optional[int]) -> None:
+        logger.info("HEARTBEAT received: drone=%s is_armed=%s port=%s sysid=%s", drone_id, is_armed, dest_port, sysid)
         tracker = get_tracker()
-        if not tracker or not self._loop:
+        if not tracker:
+            logger.warning("Flight tracker not available when heartbeat received for %s", drone_id)
+            return
+        if not self._loop:
+            logger.warning("Event loop not available when heartbeat received for %s", drone_id)
             return
         future = asyncio.run_coroutine_threadsafe(
             tracker.handle_heartbeat(drone_id, is_armed=is_armed, udp_port=dest_port, sysid=sysid),

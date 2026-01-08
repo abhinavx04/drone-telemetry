@@ -84,23 +84,61 @@ class FlightTracker:
         async with self._lock:
             last_state = self._armed_state.get(drone_id)
             last_change = self._state_change_at.get(drone_id, 0.0)
+            has_active_flight = drone_id in self._active
 
-            logger.debug(
-                "Heartbeat for %s: is_armed=%s last_state=%s last_change_ago=%.2fs",
-                drone_id, is_armed, last_state, now - last_change if last_change > 0 else 0
+            logger.info(
+                "Heartbeat for %s: is_armed=%s last_state=%s has_active_flight=%s last_change_ago=%.2fs",
+                drone_id,
+                is_armed,
+                last_state,
+                has_active_flight,
+                now - last_change if last_change > 0 else 0,
             )
 
             if last_state is not None and last_state == is_armed:
-                # Update last heartbeat time for active flight
-                if drone_id in self._active:
-                    self._active[drone_id].last_heartbeat_ts = now
-                self._state_change_at[drone_id] = now
-                return
+                # Same state, but check for orphaned flights if disarmed
+                if not is_armed and has_active_flight:
+                    # Drone is disarmed but flight still open - close it!
+                    flight_id_to_close = self._active[drone_id].flight_id
+                    logger.warning(
+                        "Detected DISARM state for %s but flight %s still open - closing it",
+                        drone_id,
+                        flight_id_to_close,
+                    )
+                    self._armed_state[drone_id] = False
+                    self._state_change_at[drone_id] = now
+                    should_close_orphaned = True
+                else:
+                    # Update last heartbeat time for active flight
+                    if has_active_flight:
+                        self._active[drone_id].last_heartbeat_ts = now
+                    self._state_change_at[drone_id] = now
+                    should_close_orphaned = False
+            else:
+                should_close_orphaned = False
 
-            if now - last_change < 2.0:
+        # Close orphaned flight if detected (outside lock to avoid deadlock)
+        if should_close_orphaned:
+            await self._close_flight(drone_id, now, auto_closed=False)
+            return
+
+        # Check if we need to process state change
+        if last_state is not None and last_state == is_armed:
+            # Already handled above
+            return
+
+        # Debounce logic with smarter handling for DISARM
+        if now - last_change < 2.0:
+            # Allow DISARM to bypass debounce if flight is open (critical to close flights quickly)
+            if is_armed or not has_active_flight:
                 logger.debug("Debounced arm state change for %s (%.2fs)", drone_id, now - last_change)
                 return
+            # DISARM with open flight - allow it through with shorter debounce
+            if now - last_change < 0.5:  # 500ms debounce for DISARM
+                logger.debug("Debounced DISARM for %s (%.2fs)", drone_id, now - last_change)
+                return
 
+        async with self._lock:
             self._armed_state[drone_id] = is_armed
             self._state_change_at[drone_id] = now
 
@@ -213,16 +251,103 @@ class FlightTracker:
                 self._state_change_at[drone_id] = time.time()
                 logger.info("Recovered in-progress flight %s for %s", flight_id, drone_id)
 
+    async def _check_armed_state_mismatch(self) -> None:
+        """
+        Check for flights that are open but drone is currently disarmed.
+        This handles cases where DISARM was missed or flight wasn't closed properly.
+        """
+        now = time.time()
+        timeout_sec = 5  # If disarmed for 5+ seconds and flight still open, close it
+
+        async with self._lock:
+            active_copy = dict(self._active)
+            armed_state_copy = dict(self._armed_state)
+            state_change_copy = dict(self._state_change_at)
+
+        for drone_id, state in active_copy.items():
+            current_armed = armed_state_copy.get(drone_id)
+
+            # If drone is disarmed but flight is open
+            if current_armed is False:
+                # Check how long it's been disarmed
+                last_change = state_change_copy.get(drone_id, 0.0)
+                disarmed_duration = now - last_change
+
+                if disarmed_duration >= timeout_sec:
+                    logger.info(
+                        "Closing flight for %s: drone has been disarmed for %d seconds but flight still open",
+                        drone_id,
+                        int(disarmed_duration),
+                    )
+                    await self._close_flight(drone_id, now, auto_closed=False)
+
     async def _check_telemetry_timeout(self) -> None:
         """
         Close flights for drones that haven't sent telemetry recently.
         Handles cases where drone/GCS is turned off without sending DISARM.
+        Also checks database for orphaned flights (open in DB but not in memory).
         """
         from app.state import telemetry_cache
 
         timeout_sec = settings.flight_telemetry_timeout_sec
         now = time.time()
 
+        # First, check for orphaned flights in database (open but not in memory)
+        async with AsyncSessionLocal() as db:
+            orphaned_result = await db.execute(
+                text(
+                    """
+                    SELECT flight_id, drone_id, flight_count, start_timestamp
+                    FROM flights
+                    WHERE end_timestamp IS NULL
+                    ORDER BY start_timestamp DESC
+                    """
+                )
+            )
+            orphaned_rows = orphaned_result.mappings().all()
+
+        async with self._lock:
+            active_drone_ids = set(self._active.keys())
+
+        for row in orphaned_rows:
+            drone_id = row["drone_id"]
+            flight_id = row["flight_id"]
+            
+            # If this flight is not in memory, it's orphaned
+            if drone_id not in active_drone_ids:
+                # Check last telemetry in database for this flight
+                async with AsyncSessionLocal() as db:
+                    last_telemetry_result = await db.execute(
+                        text(
+                            "SELECT MAX(timestamp) as last_ts FROM flight_telemetry WHERE flight_id = :flight_id"
+                        ),
+                        {"flight_id": flight_id},
+                    )
+                    last_telemetry_row = last_telemetry_result.mappings().first()
+                    last_telemetry_ts = last_telemetry_row["last_ts"] if last_telemetry_row and last_telemetry_row["last_ts"] else None
+
+                if last_telemetry_ts:
+                    # timestamp is in seconds (unix timestamp), not milliseconds
+                    age = now - last_telemetry_ts
+                else:
+                    # No telemetry recorded, use start time
+                    age = now - row["start_timestamp"]
+
+                if age > timeout_sec:
+                    logger.info(
+                        "Closing orphaned flight %s for %s: no telemetry for %d seconds (flight_count=%d)",
+                        flight_id, drone_id, int(age), row["flight_count"]
+                    )
+                    await self._finalize_flight_by_id(
+                        flight_id,
+                        drone_id,
+                        int(row["flight_count"]),
+                        start_ts=int(row["start_timestamp"]),
+                        end_ts=int(now),
+                        auto_closed=True,
+                    )
+
+        # Check flights in memory
         async with self._lock:
             active_copy = dict(self._active)
 
@@ -262,12 +387,15 @@ class FlightTracker:
     async def _cleanup_loop(self) -> None:
         # Check telemetry timeout every minute for faster response
         telemetry_check_interval = min(60, settings.flight_telemetry_timeout_sec // 2)
+        armed_state_check_interval = 5  # Check every 5 seconds for armed state mismatches
         last_telemetry_check = 0.0
+        last_armed_check = 0.0
 
         while not self._stop.is_set():
             try:
-                # Check telemetry timeout more frequently than full cleanup
                 now = time.time()
+
+                # Check telemetry timeout
                 if now - last_telemetry_check >= telemetry_check_interval:
                     try:
                         await self._check_telemetry_timeout()
@@ -275,14 +403,23 @@ class FlightTracker:
                     except Exception as exc:  # noqa: BLE001
                         logger.error("Telemetry timeout check failed: %s", exc, exc_info=True)
 
+                # Check armed state mismatches more frequently
+                if now - last_armed_check >= armed_state_check_interval:
+                    try:
+                        await self._check_armed_state_mismatch()
+                        last_armed_check = now
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error("Armed state check failed: %s", exc, exc_info=True)
+
                 # Wait for cleanup interval or stop event
                 await asyncio.wait_for(self._stop.wait(), timeout=settings.flight_cleanup_interval_sec)
             except asyncio.TimeoutError:
                 try:
                     await self.close_stale_open_flights()
-                    # Also check telemetry timeout
                     await self._check_telemetry_timeout()
+                    await self._check_armed_state_mismatch()
                     last_telemetry_check = time.time()
+                    last_armed_check = time.time()
                 except Exception as exc:  # noqa: BLE001
                     logger.error("Stale flight cleanup failed: %s", exc, exc_info=True)
                 continue
@@ -325,6 +462,38 @@ class FlightTracker:
 
     async def _start_flight(self, drone_id: str, udp_port: Optional[int], now_ts: float) -> None:
         start_ts = int(now_ts)
+        
+        # Close any existing active flight for this drone (shouldn't happen, but handle it)
+        async with self._lock:
+            existing_state = self._active.get(drone_id)
+        if existing_state:
+            logger.warning(
+                "Starting new flight for %s but found existing active flight %s - closing it first",
+                drone_id, existing_state.flight_id
+            )
+            await self._close_flight(drone_id, now_ts, auto_closed=True)
+        
+        # Also check database for any orphaned open flights for this drone
+        async with AsyncSessionLocal() as db:
+            orphaned_result = await db.execute(
+                text("SELECT flight_id, flight_count, start_timestamp FROM flights WHERE drone_id = :drone_id AND end_timestamp IS NULL"),
+                {"drone_id": drone_id},
+            )
+            orphaned_rows = orphaned_result.mappings().all()
+            for row in orphaned_rows:
+                logger.warning(
+                    "Found orphaned open flight %s for %s (started at %s) - closing before starting new flight",
+                    row["flight_id"], drone_id, row["start_timestamp"]
+                )
+                await self._finalize_flight_by_id(
+                    row["flight_id"],
+                    drone_id,
+                    int(row["flight_count"]),
+                    start_ts=int(row["start_timestamp"]),
+                    end_ts=start_ts - 1,  # End 1 second before new flight starts
+                    auto_closed=True,
+                )
+        
         flight_id = str(uuid.uuid4())
         async with AsyncSessionLocal() as db:
             try:
