@@ -33,6 +33,7 @@ class FlightState:
     flight_count: int
     start_ts: int
     last_heartbeat_ts: float
+    last_telemetry_ts: float
     last_armed_state: bool
     last_state_change_ts: float
     metrics: FlightMetrics = field(default_factory=FlightMetrics)
@@ -84,7 +85,15 @@ class FlightTracker:
             last_state = self._armed_state.get(drone_id)
             last_change = self._state_change_at.get(drone_id, 0.0)
 
+            logger.debug(
+                "Heartbeat for %s: is_armed=%s last_state=%s last_change_ago=%.2fs",
+                drone_id, is_armed, last_state, now - last_change if last_change > 0 else 0
+            )
+
             if last_state is not None and last_state == is_armed:
+                # Update last heartbeat time for active flight
+                if drone_id in self._active:
+                    self._active[drone_id].last_heartbeat_ts = now
                 self._state_change_at[drone_id] = now
                 return
 
@@ -96,8 +105,10 @@ class FlightTracker:
             self._state_change_at[drone_id] = now
 
         if is_armed:
+            logger.info("ARM detected for %s - starting flight", drone_id)
             await self._start_flight(drone_id, udp_port, now)
         else:
+            logger.info("DISARM detected for %s - closing flight", drone_id)
             await self._close_flight(drone_id, now, auto_closed=False)
 
     async def handle_normalized(self, normalized: NormalizedTelemetry, udp_port: Optional[int] = None) -> None:
@@ -111,6 +122,11 @@ class FlightTracker:
             state = self._active.get(normalized.drone_id)
         if not state:
             return
+
+        # Update last telemetry timestamp
+        async with self._lock:
+            if normalized.drone_id in self._active:
+                self._active[normalized.drone_id].last_telemetry_ts = now
 
         await self._persist_flight_telemetry(state.flight_id, normalized)
 
@@ -189,6 +205,7 @@ class FlightTracker:
                     flight_count=flight_count,
                     start_ts=start_ts,
                     last_heartbeat_ts=time.time(),
+                    last_telemetry_ts=time.time(),
                     last_armed_state=True,
                     last_state_change_ts=time.time(),
                 )
@@ -196,13 +213,76 @@ class FlightTracker:
                 self._state_change_at[drone_id] = time.time()
                 logger.info("Recovered in-progress flight %s for %s", flight_id, drone_id)
 
+    async def _check_telemetry_timeout(self) -> None:
+        """
+        Close flights for drones that haven't sent telemetry recently.
+        Handles cases where drone/GCS is turned off without sending DISARM.
+        """
+        from app.state import telemetry_cache
+
+        timeout_sec = settings.flight_telemetry_timeout_sec
+        now = time.time()
+
+        async with self._lock:
+            active_copy = dict(self._active)
+
+        for drone_id, state in active_copy.items():
+            # Get last seen timestamp from telemetry cache
+            snapshot = await telemetry_cache.get_latest(drone_id)
+            if snapshot is None:
+                # Drone unknown, close flight
+                logger.info("Closing flight for %s: drone no longer in telemetry cache", drone_id)
+                await self._close_flight(drone_id, now, auto_closed=True)
+                continue
+
+            last_seen = snapshot.last_seen_ts
+            if last_seen is None:
+                logger.info("Closing flight for %s: no last_seen timestamp", drone_id)
+                await self._close_flight(drone_id, now, auto_closed=True)
+                continue
+
+            # Use last telemetry time from flight state, fallback to cache
+            last_telemetry = state.last_telemetry_ts if state.last_telemetry_ts > 0 else last_seen
+            age = now - last_telemetry
+
+            if age > timeout_sec:
+                # Check if drone is offline/stale
+                if snapshot.status in ["offline", "stale"]:
+                    logger.info(
+                        "Closing flight for %s: no telemetry for %d seconds (status: %s, last_telemetry_age: %.1fs)",
+                        drone_id, int(age), snapshot.status, age
+                    )
+                    await self._close_flight(drone_id, now, auto_closed=True)
+                else:
+                    logger.debug(
+                        "Flight %s has no telemetry for %d seconds but drone status is %s - keeping open",
+                        drone_id, int(age), snapshot.status
+                    )
+
     async def _cleanup_loop(self) -> None:
+        # Check telemetry timeout every minute for faster response
+        telemetry_check_interval = min(60, settings.flight_telemetry_timeout_sec // 2)
+        last_telemetry_check = 0.0
+
         while not self._stop.is_set():
             try:
+                # Check telemetry timeout more frequently than full cleanup
+                now = time.time()
+                if now - last_telemetry_check >= telemetry_check_interval:
+                    try:
+                        await self._check_telemetry_timeout()
+                        last_telemetry_check = now
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error("Telemetry timeout check failed: %s", exc, exc_info=True)
+
+                # Wait for cleanup interval or stop event
                 await asyncio.wait_for(self._stop.wait(), timeout=settings.flight_cleanup_interval_sec)
             except asyncio.TimeoutError:
                 try:
                     await self.close_stale_open_flights()
+                    # Also check telemetry timeout
+                    await self._check_telemetry_timeout()
+                    last_telemetry_check = time.time()
                 except Exception as exc:  # noqa: BLE001
                     logger.error("Stale flight cleanup failed: %s", exc, exc_info=True)
                 continue
@@ -297,16 +377,20 @@ class FlightTracker:
                 flight_count=flight_count,
                 start_ts=start_ts,
                 last_heartbeat_ts=now_ts,
+                last_telemetry_ts=now_ts,
                 last_armed_state=True,
                 last_state_change_ts=now_ts,
             )
-        logger.info("Flight start: %s flight_count=%s", drone_id, flight_count)
+        logger.info("Flight START: %s flight_id=%s flight_count=%s", drone_id, flight_id, flight_count)
 
     async def _close_flight(self, drone_id: str, now_ts: float, auto_closed: bool) -> None:
         async with self._lock:
             state = self._active.pop(drone_id, None)
         if not state:
+            logger.debug("_close_flight called for %s but no active flight found", drone_id)
             return
+        reason = "auto-closed" if auto_closed else "DISARM"
+        logger.info("Flight END: %s flight_id=%s reason=%s", drone_id, state.flight_id, reason)
         await self._finalize_flight_state(state, end_ts=int(now_ts), auto_closed=auto_closed)
         async with self._lock:
             self._armed_state[drone_id] = False
@@ -387,6 +471,7 @@ class FlightTracker:
                 flight_count=flight_count,
                 start_ts=start_ts,
                 last_heartbeat_ts=time.time(),
+                last_telemetry_ts=time.time(),
                 last_armed_state=False,
                 last_state_change_ts=time.time(),
             ),

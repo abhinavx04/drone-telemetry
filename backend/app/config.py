@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     gc_offline_after_sec: int = Field(3600, alias="GC_OFFLINE_AFTER_SEC")
     flight_auto_close_after_sec: int = Field(24 * 3600, alias="FLIGHT_AUTO_CLOSE_AFTER_SEC")
     flight_cleanup_interval_sec: int = Field(3600, alias="FLIGHT_CLEANUP_INTERVAL_SEC")
+    flight_telemetry_timeout_sec: int = Field(60, alias="FLIGHT_TELEMETRY_TIMEOUT_SEC")
     ulog_storage_dir: str = Field("data/ulogs", alias="ULOG_STORAGE_DIR")
 
     model_config = SettingsConfigDict(env_file=".env")

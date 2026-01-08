@@ -45,6 +45,7 @@ services:
       WS_PUSH_HZ: 5
       FLIGHT_AUTO_CLOSE_AFTER_SEC: 86400
       FLIGHT_CLEANUP_INTERVAL_SEC: 3600
+      FLIGHT_TELEMETRY_TIMEOUT_SEC: 60
       ULOG_STORAGE_DIR: /app/data/ulogs
     volumes:
       - ./data/ulogs:/app/data/ulogs
