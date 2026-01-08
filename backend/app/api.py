@@ -20,9 +20,11 @@ from app.schemas import (
     FlightTelemetryPage,
     FlightTelemetryPoint,
     HealthResponse,
+    TelemetryImportResult,
     TelemetryLatestOut,
     ULogFileOut,
 )
+from app.telemetry_importer import TelemetryImporter
 from app.state import SERVICE_START_TIME, get_mavlink_snapshot, get_mqtt_snapshot, telemetry_cache
 
 logger = logging.getLogger(__name__)
@@ -281,3 +283,83 @@ async def list_ulogs(flight_id: str, db: AsyncSession = Depends(get_db)) -> list
     )
     rows = result.mappings().all()
     return [ULogFileOut.model_validate(sanitize_json_value(dict(row))) for row in rows]
+
+
+@router.post(
+    "/drones/{drone_id}/telemetry/import",
+    response_model=TelemetryImportResult,
+    summary="Import historical telemetry data (CSV or JSON)",
+)
+async def import_historical_telemetry(
+    drone_id: str,
+    file: UploadFile = File(...),
+    gcs_flight_count_offset: Optional[int] = None,
+) -> TelemetryImportResult:
+    """
+    Import historical telemetry data from CSV or JSON file.
+
+    The file should contain telemetry points with the following fields:
+    - timestamp (required): Unix timestamp in seconds
+    - latitude, longitude: GPS coordinates
+    - altitude_m: Altitude in meters
+    - battery_pct: Battery percentage
+    - flight_mode: Flight mode (e.g., AUTO, MANUAL)
+    - ground_speed_mps: Ground speed in m/s
+    - climb_rate_mps: Climb rate in m/s
+    - heading_deg: Heading in degrees
+    - gps_lost: Boolean indicating GPS loss
+    - is_emergency: Boolean indicating emergency mode
+
+    The system will:
+    1. Detect flight boundaries automatically
+    2. Create flight records
+    3. Import telemetry points
+    4. Detect problems and anomalies
+    5. Calculate statistics
+
+    Args:
+        drone_id: Drone identifier (e.g., "udp:14540")
+        file: Telemetry file (CSV or JSON)
+        gcs_flight_count_offset: Optional offset for flight count numbering (if GCS has its own numbering)
+
+    Returns:
+        ImportResult with details of imported flights and detected problems
+    """
+    try:
+        # Read file content
+        content = await file.read()
+
+        # Import telemetry
+        importer = TelemetryImporter()
+        result = await importer.import_from_file(
+            drone_id=drone_id,
+            file_content=content,
+            filename=file.filename or "telemetry.csv",
+            gcs_flight_count_offset=gcs_flight_count_offset,
+        )
+
+        logger.info(
+            "Telemetry import completed for %s: %d flights, %d points, %d problems",
+            drone_id,
+            result.flights_created,
+            result.telemetry_points_imported,
+            result.problems_detected,
+        )
+
+        return TelemetryImportResult(
+            flights_created=result.flights_created,
+            telemetry_points_imported=result.telemetry_points_imported,
+            problems_detected=result.problems_detected,
+            flight_ids=result.flight_ids,
+            warnings=result.warnings,
+            errors=result.errors,
+        )
+
+    except ValueError as exc:
+        logger.error("Invalid telemetry file for %s: %s", drone_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to import telemetry for %s: %s", drone_id, exc, exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Import failed: {exc}"
+        ) from exc

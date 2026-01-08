@@ -180,3 +180,14 @@ class ULogFileOut(BaseModel):
     size_bytes: int
     uploaded_at: int
     content_type: Optional[str] = None
+
+
+class TelemetryImportResult(BaseModel):
+    """Result of telemetry import operation."""
+
+    flights_created: int
+    telemetry_points_imported: int
+    problems_detected: int
+    flight_ids: list[str]
+    warnings: list[str]
+    errors: list[str]
