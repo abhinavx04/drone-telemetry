@@ -52,3 +52,16 @@ class TelemetryIn(BaseModel):
 
 class TelemetryOut(TelemetryIn):
     pass
+
+
+class Drone(BaseModel):
+    """Latest snapshot per drone (same fields as stored `telemetry` row)."""
+
+    drone_id: str = Field(..., max_length=50)
+    latitude: float
+    longitude: float
+    absolute_altitude_m: float | None = None
+    timestamp: int
+    battery_percentage: float | None = None
+    flight_mode: str | None = None
+    is_online: bool | None = True

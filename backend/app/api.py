@@ -1,30 +1,27 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from app.database import SessionLocal
-from app import crud, schemas
 import logging
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app import crud, schemas
+from app.db import get_db
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 @router.get("/drones", response_model=list[schemas.Drone])
-def read_drones(db: Session = Depends(get_db)):
+async def read_drones(db: AsyncSession = Depends(get_db)):
     try:
-        logger.info("Fetching drones from the database.")
-        drones = crud.get_drones(db)
-        logger.info(f"Found {len(drones)} drones.")
+        logger.info("Fetching drones (latest telemetry per drone).")
+        drones = await crud.get_drones(db)
+        logger.info("Found %s drones.", len(drones))
         return drones
+    except SQLAlchemyError as e:
+        logger.error("Database error fetching drones: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error") from e
     except Exception as e:
-        logger.error(f"Error fetching drones: {e}", exc_info=True)
-        # This is the corrected line
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error("Error fetching drones: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error") from e

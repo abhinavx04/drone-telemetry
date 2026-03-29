@@ -4,7 +4,7 @@ from sqlalchemy import select, text
 from typing import List
 import logging
 from app.models import Telemetry
-from app.schemas import TelemetryIn
+from app.schemas import Drone, TelemetryIn
 
 logger = logging.getLogger(__name__)
 
@@ -65,3 +65,13 @@ async def get_all_drones_latest_telemetry(db: AsyncSession) -> List[Telemetry]:
     except Exception as e:
         logger.error(f"Error fetching latest telemetry for all drones: {e}")
         raise
+
+
+async def get_drones(db: AsyncSession) -> List[Drone]:
+    """Latest telemetry row per `drone_id` for fleet listing (`GET /api/v1/drones`)."""
+    rows = await get_all_drones_latest_telemetry(db)
+    drones: List[Drone] = []
+    for row in rows:
+        d = dict(row)
+        drones.append(Drone(**d))
+    return drones
