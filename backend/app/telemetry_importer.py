@@ -508,3 +508,5 @@ class TelemetryImporter:
             except Exception as exc:  # noqa: BLE001
                 logger.error("Failed to update drone flight count: %s", exc)
 
+
+
